@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>Mata Penjaga</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Mata">
+<style>
+  :root {
+    --bg: #000000;
+    --fg: #7df9ff;
+    --muted: #3c7f86;
+    --accent: #7df9ff;
+    --panel: #061214;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font-family: ui-monospace, "Courier New", monospace; overflow: hidden;
+    -webkit-tap-highlight-color: transparent; touch-action: none; }
+  canvas#face { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  video { position: fixed; left: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    width: 80px; border-radius: 4px; transform: scaleX(-1); opacity: .6; border: 1px solid var(--muted); }
+  #hud { position: fixed; left: 0; right: 0; top: calc(14px + env(safe-area-inset-top, 0px));
+    text-align: center; font-size: 12px; color: var(--muted); letter-spacing: .1em; pointer-events: none;
+    text-transform: uppercase; }
+  #caption { position: fixed; left: 0; right: 0; bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+    padding: 0 max(16px, env(safe-area-inset-left, 0px)) 0 max(16px, env(safe-area-inset-right, 0px));
+    text-align: center; pointer-events: none; display: grid; gap: 6px; }
+  #caption .you { color: #9fdfe4; font-size: 14px; opacity: .8; }
+  #caption .bot { color: var(--fg); font-size: 16px; line-height: 1.4; max-width: 34ch; margin: 0 auto; }
+  #gear { position: fixed; top: calc(8px + env(safe-area-inset-top, 0px)); right: max(8px, env(safe-area-inset-right, 0px));
+    width: 40px; height: 40px; border-radius: 4px; border: 1px solid var(--muted); background: transparent;
+    color: var(--fg); font-size: 20px; cursor: pointer; z-index: 3; }
+  #start, #settings { position: fixed; inset: 0; display: grid; place-items: center; background: #000000f2; z-index: 5; }
+  #start .box, #settings .box { padding: 24px; max-width: 360px; width: 100%; }
+  #start .box { text-align: center; }
+  h1, h2 { margin: 0 0 8px; letter-spacing: .08em; }
+  h1 { font-size: 24px; } h2 { font-size: 18px; }
+  p, label, .note { font-family: system-ui, sans-serif; }
+  #start p { color: #9fdfe4; line-height: 1.5; margin: 0 0 20px; }
+  button.main { font: inherit; font-size: 16px; padding: 12px 26px; border-radius: 4px; border: 2px solid var(--accent);
+    background: transparent; color: var(--accent); font-weight: 700; cursor: pointer; letter-spacing: .08em; }
+  button.main:active { background: var(--accent); color: #000; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+  #err { color: #ff8a80; font-size: 14px; margin-top: 14px; min-height: 1em; font-family: system-ui, sans-serif; }
+  #settings .box { background: var(--panel); border: 1px solid var(--muted); border-radius: 6px; display: grid; gap: 14px; }
+  #settings label { display: grid; gap: 6px; font-size: 14px; color: #cdeff2; }
+  #settings label.row { grid-template-columns: auto 1fr; align-items: center; gap: 10px; }
+  #settings input[type=password], #settings select { font: inherit; font-size: 15px; padding: 10px; border-radius: 4px;
+    border: 1px solid var(--muted); background: #000; color: var(--fg); width: 100%; }
+  #settings input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
+  .note { font-size: 12px; color: #8fb8bc; line-height: 1.45; margin: 0; }
+  .actions { display: flex; gap: 10px; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<canvas id="face"></canvas>
+<video id="cam" playsinline muted hidden></video>
+<div id="hud"></div>
+<div id="caption"><div class="you" id="capYou"></div><div class="bot" id="capBot"></div></div>
+<button id="gear" aria-label="Pengaturan" hidden>⚙</button>
+
+<div id="start">
+  <div class="box">
+    <h1>MATA PENJAGA</h1>
+    <p>Asisten suara dengan mata robot. Ketuk layar lalu bicara, atau aktifkan "selalu dengar" dan panggil <b>"Halo robot"</b>.</p>
+    <button class="main" id="go">MULAI</button>
+    <div style="margin-top:14px"><button class="main" id="install" hidden>INSTAL APLIKASI</button></div>
+    <p class="note" id="iosHint" hidden style="margin-top:14px">Untuk memasang di iPhone: ketuk tombol Bagikan lalu "Tambah ke Layar Utama".</p>
+    <div id="err"></div>
+  </div>
+</div>
+
+<div id="settings" hidden>
+  <form class="box" id="setForm">
+    <h2>PENGATURAN</h2>
+    <label>Otak asisten
+      <select id="provider">
+        <option value="gemini">Google Gemini (ada kuota gratis)</option>
+        <option value="claude">Claude (berbayar)</option>
+      </select>
+    </label>
+    <div id="geminiFields" style="display:grid;gap:14px">
+      <label>API key Gemini
+        <input type="password" id="geminiKey" autocomplete="off" placeholder="AIza...">
+      </label>
+      <p class="note">Buat key gratis di aistudio.google.com, menu "Get API key". Kuota gratis terbatas per hari. Di paket gratis, Google bisa memakai percakapan untuk melatih modelnya, jadi jangan ceritakan hal pribadi.</p>
+    </div>
+    <div id="claudeFields" style="display:grid;gap:14px">
+      <label>API key Claude
+        <input type="password" id="apiKey" autocomplete="off" placeholder="sk-ant-...">
+      </label>
+      <label>Model Claude
+        <select id="model">
+          <option value="claude-opus-5-5">Claude Opus 5.5 (paling pintar)</option>
+          <option value="claude-haiku-5-5">Claude Haiku 5.5 (lebih cepat, lebih murah)</option>
+        </select>
+      </label>
+      <p class="note">Setiap pertanyaan dibayar. Pasang batas biaya di console Anthropic.</p>
+    </div>
+    <p class="note">Key disimpan hanya di browser HP ini. Siapa pun yang memegang HP ini bisa memakainya. Tanpa key, hanya perintah bawaan yang jalan (jam, tanggal, timer, cuaca).</p>
+    <label class="row"><input type="checkbox" id="wake"> Selalu dengar, panggil "Halo robot"</label>
+    <label class="row"><input type="checkbox" id="showCam"> Tampilkan kamera kecil</label>
+    <div class="actions">
+      <button type="button" class="main" id="setClose">TUTUP</button>
+      <button type="submit" class="main">SIMPAN</button>
+    </div>
+  </form>
+</div>
+
+<script type="module">
+import { FaceDetector, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import Anthropic from "https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.8.0/+esm";
+
+// Warna piksel OLED yang menyala
+const LIT = [125, 249, 255];
+
+const $ = id => document.getElementById(id);
+
+// ---------- PWA: service worker + tombol instal ----------
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(err => console.warn("SW gagal:", err));
+}
+const standalone = matchMedia("(display-mode: standalone), (display-mode: fullscreen)").matches || navigator.standalone;
+let installEvt = null;
+addEventListener("beforeinstallprompt", e => {
+  e.preventDefault();
+  installEvt = e;
+  if (!standalone) $("install").hidden = false;
+});
+$("install").addEventListener("click", async () => {
+  if (!installEvt) return;
+  installEvt.prompt();
+  await installEvt.userChoice;
+  installEvt = null;
+  $("install").hidden = true;
+});
+addEventListener("appinstalled", () => { $("install").hidden = true; });
+if (!standalone && /iphone|ipad|ipod/i.test(navigator.userAgent)) $("iosHint").hidden = false;
+const cvs = $("face"), ctx = cvs.getContext("2d");
+const video = $("cam"), hud = $("hud"), errEl = $("err");
+const capYou = $("capYou"), capBot = $("capBot");
+
+// ---------- pengaturan (localStorage, aman bila diblokir) ----------
+const cfg = { provider: "gemini", geminiKey: "", geminiModel: "", apiKey: "", model: "claude-opus-5-5", wake: false, showCam: true };
+try { Object.assign(cfg, JSON.parse(localStorage.getItem("mataCfg") || "{}")); } catch {}
+function saveCfg() { try { localStorage.setItem("mataCfg", JSON.stringify(cfg)); } catch {} }
+
+// ---------- buffer OLED ----------
+const BW = 128;
+let BH = 64, PS = 4, OX = 0, OY = 0;
+const buf = document.createElement("canvas");
+const bctx = buf.getContext("2d", { willReadFrequently: true });
+let grid = null;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cvs.width = Math.round(innerWidth * dpr);
+  cvs.height = Math.round(innerHeight * dpr);
+  PS = Math.max(2, Math.floor(cvs.width / BW));
+  BH = Math.max(64, Math.floor(cvs.height / PS));
+  buf.width = BW; buf.height = BH;
+  OX = Math.floor((cvs.width - BW * PS) / 2);
+  OY = Math.floor((cvs.height - BH * PS) / 2);
+  grid = document.createElement("canvas");
+  grid.width = BW * PS; grid.height = BH * PS;
+  const g = grid.getContext("2d");
+  if (PS >= 4) {
+    g.fillStyle = "rgba(0,0,0,.55)";
+    const t = Math.max(1, Math.round(PS * 0.15));
+    for (let x = 0; x < grid.width; x += PS) g.fillRect(x, 0, t, grid.height);
+    for (let y = 0; y < grid.height; y += PS) g.fillRect(0, y, grid.width, t);
+  }
+}
+addEventListener("resize", resize); resize();
+
+// ---------- state wajah ----------
+const target = { x: 0, y: 0, close: 0.3, face: false };
+const cur = { x: 0, y: 0, close: 0.3, happy: 0, tired: 0.6, wow: 0 };
+let lastFaceAt = 0;
+let blink = 0, nextBlink = performance.now() + 2000;
+let idleT = 0, idleTarget = { x: 0, y: 0 };
+let mode = "idle";          // idle | listening | thinking | speaking
+let alarmUntil = 0;
+
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+let touchAt = 0;
+addEventListener("pointermove", e => {
+  if (target.face) return;
+  target.x = clamp((e.clientX / innerWidth - 0.5) * 2, -1, 1);
+  target.y = clamp((e.clientY / innerHeight - 0.5) * 2, -1, 1);
+  touchAt = performance.now();
+});
+
+// ---------- kamera + deteksi wajah ----------
+let detector = null, lastVideoTime = -1;
+async function startCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
+  });
+  video.srcObject = stream;
+  await video.play();
+  const fileset = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  detector = await FaceDetector.createFromOptions(fileset, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+      delegate: "GPU"
+    },
+    runningMode: "VIDEO", minDetectionConfidence: 0.5
+  });
+  video.hidden = !cfg.showCam;
+}
+
+function detect(now) {
+  if (!detector || video.readyState < 2 || video.currentTime === lastVideoTime) return;
+  lastVideoTime = video.currentTime;
+  const d = detector.detectForVideo(video, now).detections?.[0];
+  if (d) {
+    const b = d.boundingBox, vw = video.videoWidth, vh = video.videoHeight;
+    const cx = (b.originX + b.width / 2) / vw, cy = (b.originY + b.height / 2) / vh;
+    target.x = clamp((0.5 - cx) * 2.4, -1, 1);
+    target.y = clamp((cy - 0.42) * 2.4, -1, 1);
+    target.close = clamp((b.width / vw - 0.15) / 0.4, 0, 1);
+    target.face = true;
+    lastFaceAt = now;
+  } else if (now - lastFaceAt > 600) target.face = false;
+}
+
+// ---------- suara keluar (TTS) ----------
+let voice = null;
+function pickVoice() {
+  const vs = speechSynthesis.getVoices();
+  voice = vs.find(v => v.lang === "id-ID") || vs.find(v => v.lang?.startsWith("id")) || null;
+}
+if ("speechSynthesis" in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+
+let pendingSpeech = 0;
+function say(text) {
+  text = text.replace(/[*_#`>]/g, "").trim();
+  if (!text || !("speechSynthesis" in window)) return;
+  stopListening();
+  setMode("speaking");
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "id-ID"; if (voice) u.voice = voice;
+  u.rate = 1.05; u.pitch = 1.15;
+  pendingSpeech++;
+  u.onend = u.onerror = () => { pendingSpeech = Math.max(0, pendingSpeech - 1); };
+  speechSynthesis.speak(u);
+}
+function stopSpeaking() { if ("speechSynthesis" in window) speechSynthesis.cancel(); pendingSpeech = 0; }
+
+// ---------- bunyi beep ----------
+let actx = null;
+function beep(freq = 880, ms = 120, times = 1) {
+  if (!actx) return;
+  for (let i = 0; i < times; i++) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = "square"; o.frequency.value = freq;
+    g.gain.value = 0.08;
+    o.connect(g).connect(actx.destination);
+    const t = actx.currentTime + i * (ms * 2) / 1000;
+    o.start(t); o.stop(t + ms / 1000);
+  }
+}
+
+// ---------- suara masuk (speech recognition) ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, recActive = false, wantListen = false, awaitingCommand = false;
+const WAKE = /\b(halo|hai|hei|hey|oke|ok)\s+robot\b/i;
+
+function startListening(command) {
+  if (!SR || recActive) return;
+  awaitingCommand = !!command;
+  rec = new SR();
+  rec.lang = "id-ID";
+  rec.interimResults = true;
+  rec.continuous = !command && cfg.wake;
+  rec.onresult = e => {
+    let interim = "", final = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      (r.isFinal ? (final += r[0].transcript) : (interim += r[0].transcript));
+    }
+    if (awaitingCommand) capYou.textContent = (final || interim);
+    if (!final) return;
+    final = final.trim();
+    if (awaitingCommand) { awaitingCommand = false; rec.stop(); handle(final); return; }
+    // mode selalu dengar: cari kata panggil
+    const m = final.match(WAKE);
+    if (m) {
+      const rest = final.slice(m.index + m[0].length).trim();
+      if (rest) { rec.stop(); handle(rest); }
+      else { beep(1200, 80); awaitingCommand = true; setMode("listening"); capYou.textContent = ""; }
+    }
+  };
+  rec.onerror = e => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      cfg.wake = false; capBot.textContent = "Izin mikrofon ditolak. Izinkan mikrofon di pengaturan browser.";
+    }
+  };
+  rec.onend = () => {
+    recActive = false;
+    if (mode === "listening") setMode("idle");
+    // nyalakan lagi kalau mode selalu dengar & tidak sedang bicara/berpikir
+    if (cfg.wake && wantListen && mode === "idle") setTimeout(() => startListening(false), 300);
+  };
+  try { rec.start(); recActive = true; if (command) setMode("listening"); } catch {}
+}
+function stopListening() { awaitingCommand = false; if (rec && recActive) { try { rec.abort(); } catch {} } }
+
+function setMode(m) { mode = m; }
+
+// ---------- perintah bawaan ----------
+const HARI = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+const BULAN = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+const WMO = { 0: "cerah", 1: "cerah berawan", 2: "berawan sebagian", 3: "mendung", 45: "berkabut", 48: "berkabut",
+  51: "gerimis ringan", 53: "gerimis", 55: "gerimis lebat", 61: "hujan ringan", 63: "hujan", 65: "hujan lebat",
+  80: "hujan lokal", 81: "hujan deras lokal", 82: "hujan sangat deras", 95: "badai petir", 96: "badai petir", 99: "badai petir" };
+
+function getPos() {
+  return new Promise((res, rej) => navigator.geolocation
+    ? navigator.geolocation.getCurrentPosition(res, rej, { timeout: 8000, maximumAge: 600000 })
+    : rej(new Error("no geo")));
+}
+
+async function local(text) {
+  const t = text.toLowerCase();
+  const now = new Date();
+  if (/^(diam|berhenti|stop|cukup|sudah)\b/.test(t)) { stopSpeaking(); return ""; }
+  if (/(jam|pukul) berapa/.test(t))
+    return `Sekarang jam ${now.getHours()} lewat ${now.getMinutes()} menit.`;
+  if (/(hari|tanggal) (apa|berapa)|tanggal sekarang/.test(t))
+    return `Hari ini ${HARI[now.getDay()]}, ${now.getDate()} ${BULAN[now.getMonth()]} ${now.getFullYear()}.`;
+  const tm = t.match(/(timer|pengingat|alarm|hitung mundur)\D*(\d+)\s*(detik|menit|jam)/);
+  if (tm) {
+    const n = +tm[2], unit = tm[3];
+    const ms = n * (unit === "detik" ? 1000 : unit === "menit" ? 60000 : 3600000);
+    setTimeout(() => { alarmUntil = performance.now() + 4000; beep(988, 150, 6); say(`Waktu ${n} ${unit} sudah habis!`); }, ms);
+    return `Oke, timer ${n} ${unit} dimulai.`;
+  }
+  if (/cuaca|hujan (tidak|nggak|gak|enggak)|panas (tidak|nggak|gak)/.test(t)) {
+    try {
+      const p = await getPos();
+      // koordinat dibulatkan supaya lokasi tidak terlalu persis
+      const lat = p.coords.latitude.toFixed(1), lon = p.coords.longitude.toFixed(1);
+      const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&daily=precipitation_probability_max&forecast_days=1&timezone=auto`);
+      const j = await r.json();
+      const c = j.current, desc = WMO[c.weather_code] || "tidak jelas";
+      const rain = j.daily?.precipitation_probability_max?.[0];
+      return `Sekarang ${desc}, suhunya ${Math.round(c.temperature_2m)} derajat.` +
+        (rain != null ? ` Peluang hujan hari ini ${rain} persen.` : "");
+    } catch { return "Aku tidak bisa tahu lokasimu. Izinkan akses lokasi dulu ya."; }
+  }
+  return null;
+}
+
+// ---------- otak Claude ----------
+let history = [];
+let client = null, clientKey = "";
+function getClient() {
+  if (!cfg.apiKey) return null;
+  if (!client || clientKey !== cfg.apiKey) {
+    client = new Anthropic({ apiKey: cfg.apiKey, dangerouslyAllowBrowser: true });
+    clientKey = cfg.apiKey;
+  }
+  return client;
+}
+
+const SYSTEM = `Kamu adalah asisten suara bernama Robot yang tampil sebagai sepasang mata di layar HP, seperti speaker pintar.
+Jawabanmu akan dibacakan dengan suara, jadi:
+- Jawab dalam bahasa Indonesia santai dan ramah, kecuali pengguna memakai bahasa lain.
+- Singkat: 1 sampai 3 kalimat, kecuali pengguna minta penjelasan panjang.
+- Teks biasa saja. Jangan pakai markdown, daftar berpoin, emoji, atau simbol.
+- Tulis angka dan satuan supaya enak dibaca keras.
+- Kamu tidak punya akses internet. Kalau ditanya berita atau data terbaru, bilang terus terang.`;
+
+// bacakan per kalimat selagi jawaban masih mengalir
+function makeSpeaker() {
+  let pending = "", shown = "";
+  const flush = all => {
+    const re = all ? /^[\s\S]+$/ : /^[\s\S]*?[.!?](\s|$)/;
+    let m;
+    while ((m = pending.match(re)) && m[0].trim()) {
+      say(m[0]); pending = pending.slice(m[0].length);
+      if (all) break;
+    }
+  };
+  return {
+    feed(delta) { pending += delta; shown += delta; capBot.textContent = shown; flush(false); },
+    end() { flush(true); },
+  };
+}
+
+const NO_KEY = "Aku belum punya otak. Isi API key di pengaturan, tombol gerigi di pojok kanan atas.";
+
+function askAI(text) { return cfg.provider === "claude" ? askClaude(text) : askGemini(text); }
+
+// ---------- otak Gemini (REST, streaming SSE) ----------
+const GEM = "https://generativelanguage.googleapis.com/v1beta";
+let gHistory = [];
+
+// pilih model "flash" terbaru yang tersedia untuk key ini
+async function pickGeminiModel() {
+  const r = await fetch(`${GEM}/models?pageSize=200`, { headers: { "x-goog-api-key": cfg.geminiKey } });
+  if (!r.ok) throw Object.assign(new Error("list"), { status: r.status });
+  const j = await r.json();
+  const ok = (j.models || []).filter(m =>
+    (m.supportedGenerationMethods || []).includes("generateContent") &&
+    /gemini-[\d.]+-flash/.test(m.name) &&
+    !/lite|image|tts|live|audio|preview|exp|thinking|embedding/.test(m.name));
+  ok.sort((a, b) => parseFloat(b.name.match(/gemini-([\d.]+)/)[1]) - parseFloat(a.name.match(/gemini-([\d.]+)/)[1]));
+  if (!ok.length) throw Object.assign(new Error("nomodel"), { status: 404 });
+  return ok[0].name.replace(/^models\//, "");
+}
+
+async function askGemini(text, retried) {
+  if (!cfg.geminiKey) return NO_KEY;
+  if (gHistory.length > 40) gHistory = [];
+  const now = new Date();
+  const userMsg = { role: "user", parts: [{ text: `[Waktu sekarang: ${HARI[now.getDay()]}, ${now.toLocaleString("id-ID")}]\n${text}` }] };
+  const sp = makeSpeaker();
+  let full = "";
+  try {
+    if (!cfg.geminiModel) { cfg.geminiModel = await pickGeminiModel(); saveCfg(); }
+    const r = await fetch(`${GEM}/models/${cfg.geminiModel}:streamGenerateContent?alt=sse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": cfg.geminiKey },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM }] },
+        contents: [...gHistory, userMsg],
+        generationConfig: { maxOutputTokens: 4096, temperature: 0.8 },
+      }),
+    });
+    if (!r.ok) throw Object.assign(new Error(await r.text()), { status: r.status });
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let bufTxt = "", blocked = false;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bufTxt += dec.decode(value, { stream: true });
+      let i;
+      while ((i = bufTxt.indexOf("\n")) >= 0) {
+        const line = bufTxt.slice(0, i).trim(); bufTxt = bufTxt.slice(i + 1);
+        if (!line.startsWith("data:")) continue;
+        let j; try { j = JSON.parse(line.slice(5)); } catch { continue; }
+        if (j.promptFeedback?.blockReason) blocked = true;
+        const cand = j.candidates?.[0];
+        if (cand?.finishReason === "SAFETY") blocked = true;
+        const t = (cand?.content?.parts || []).map(p => p.text || "").join("");
+        if (t) { full += t; sp.feed(t); }
+      }
+    }
+    if (blocked && !full) return "Maaf, aku tidak bisa menjawab itu.";
+    sp.end();
+    if (full) gHistory.push(userMsg, { role: "model", parts: [{ text: full }] });
+    return full ? "" : "Aku tidak dapat jawaban. Coba tanya lagi ya.";
+  } catch (e) {
+    console.error(e);
+    // model lama sudah tidak ada → pilih ulang sekali
+    if (e.status === 404 && !retried && !full) { cfg.geminiModel = ""; return askGemini(text, true); }
+    stopSpeaking();
+    if (e.status === 400 || e.status === 401 || e.status === 403) return "API key Gemini tidak valid. Cek lagi di pengaturan.";
+    if (e.status === 429) return "Kuota gratis Gemini sudah habis untuk sekarang. Coba lagi nanti.";
+    if (e.status >= 500) return "Server Gemini sedang sibuk. Coba lagi ya.";
+    if (e.status === 404) return "Tidak ada model Gemini yang bisa dipakai key ini.";
+    return "Aku tidak terhubung ke internet.";
+  }
+}
+
+async function askClaude(text) {
+  const c = getClient();
+  if (!c) return NO_KEY;
+  if (history.length > 40) history = [];        // mulai percakapan baru, bukan memotong riwayat
+  const now = new Date();
+  const userMsg = { role: "user", content: `[Waktu sekarang: ${HARI[now.getDay()]}, ${now.toLocaleString("id-ID")}]\n${text}` };
+  const isOpus = cfg.model === "claude-opus-5-5";
+  const params = {
+    model: cfg.model,
+    max_tokens: 1024,
+    system: SYSTEM,
+    messages: [...history, userMsg],
+    output_config: { effort: "low" },
+  };
+  if (isOpus) { params.betas = ["server-side-fallback-2026-07-01"]; params.fallbacks = "default"; }
+
+  const sp = makeSpeaker();
+  try {
+    const stream = c.beta.messages.stream(params);
+    stream.on("text", sp.feed);
+    const msg = await stream.finalMessage();
+    if (msg.stop_reason === "refusal") { stopSpeaking(); return "Maaf, aku tidak bisa menjawab itu."; }
+    sp.end();
+    history.push(userMsg, { role: "assistant", content: msg.content });
+    return "";
+  } catch (e) {
+    console.error(e);
+    stopSpeaking();
+    if (e instanceof Anthropic.AuthenticationError) return "API key-nya tidak valid. Cek lagi di pengaturan.";
+    if (e instanceof Anthropic.PermissionDeniedError) return "Key ini tidak punya izin memakai model itu.";
+    if (e instanceof Anthropic.RateLimitError) return "Aku lagi kebanyakan permintaan. Coba lagi sebentar lagi.";
+    if (e instanceof Anthropic.APIConnectionError) return "Aku tidak terhubung ke internet.";
+    if (e instanceof Anthropic.APIError) return "Ada gangguan di server. Coba lagi ya.";
+    return "Ada yang salah. Coba lagi ya.";
+  }
+}
+
+async function handle(text) {
+  capYou.textContent = text;
+  capBot.textContent = "";
+  setMode("thinking");
+  let reply = await local(text);
+  if (reply === null) reply = await askAI(text);
+  if (reply) { capBot.textContent = reply; say(reply); }
+  if (!pendingSpeech && !speechSynthesis.speaking) {
+    setMode("idle");
+    if (cfg.wake && wantListen) setTimeout(() => startListening(false), 300);
+  }
+}
+
+// ---------- interaksi ----------
+addEventListener("click", e => {
+  if (e.target.closest("#start, #settings, #gear")) return;
+  if (actx?.state === "suspended") actx.resume();
+  if (mode === "speaking") { stopSpeaking(); setMode("idle"); return; }
+  if (mode === "listening") { stopListening(); return; }
+  if (mode === "thinking") return;
+  if (!SR) { capBot.textContent = "Browser ini tidak bisa mendengar suara. Pakai Chrome di Android."; return; }
+  stopListening();
+  setTimeout(() => startListening(true), 150);
+});
+
+$("go").addEventListener("click", async () => {
+  errEl.textContent = "Memuat…";
+  try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+  // buka kunci suara (iOS butuh gesture)
+  try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); } catch {}
+  try { await startCamera(); }
+  catch (e) {
+    console.error(e);
+    errEl.textContent = (location.protocol !== "https:" && location.hostname !== "localhost")
+      ? "Kamera butuh HTTPS. Buka halaman ini lewat link https."
+      : "Kamera tidak bisa dibuka. Mata akan ikut jarimu.";
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  $("start").hidden = true;
+  $("gear").hidden = false;
+  try { await navigator.wakeLock?.request("screen"); } catch {}
+  wantListen = true;
+  if (cfg.wake) startListening(false);
+  capBot.textContent = (cfg.provider === "claude" ? cfg.apiKey : cfg.geminiKey) ?"Ketuk layar lalu bicara." : "Ketuk layar lalu bicara. Isi API key di ⚙ supaya aku bisa menjawab apa saja.";
+});
+
+// pengaturan
+const setEl = $("settings");
+function showProviderFields() {
+  const g = $("provider").value === "gemini";
+  $("geminiFields").style.display = g ? "grid" : "none";
+  $("claudeFields").style.display = g ? "none" : "grid";
+}
+$("provider").addEventListener("change", showProviderFields);
+$("gear").addEventListener("click", () => {
+  $("provider").value = cfg.provider; $("geminiKey").value = cfg.geminiKey; showProviderFields();
+  $("apiKey").value = cfg.apiKey; $("model").value = cfg.model;
+  $("wake").checked = cfg.wake; $("showCam").checked = cfg.showCam;
+  setEl.hidden = false;
+});
+$("setClose").addEventListener("click", () => { setEl.hidden = true; });
+$("setForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const newGemKey = $("geminiKey").value.trim();
+  if (newGemKey !== cfg.geminiKey) cfg.geminiModel = "";   // key baru → cari model lagi
+  cfg.geminiKey = newGemKey;
+  if ($("provider").value !== cfg.provider) { history = []; gHistory = []; }
+  cfg.provider = $("provider").value;
+  cfg.apiKey = $("apiKey").value.trim();
+  cfg.model = $("model").value;
+  const wasWake = cfg.wake;
+  cfg.wake = $("wake").checked;
+  cfg.showCam = $("showCam").checked;
+  saveCfg();
+  video.hidden = !cfg.showCam || !video.srcObject;
+  setEl.hidden = true;
+  if (cfg.wake && !wasWake) { stopListening(); setTimeout(() => startListening(false), 200); }
+  if (!cfg.wake && wasWake) stopListening();
+  capBot.textContent = "Pengaturan disimpan.";
+});
+
+// ---------- gambar ----------
+function rrect(c, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function drawEye(c, ex, ey, side, b) {
+  const grow = 1 + cur.wow * 0.3;
+  const persp = 1 + side * cur.x * 0.1;
+  const w = 32 * grow * persp;
+  const h = Math.max(2, 32 * grow * persp * (1 - b));
+  const x = ex - w / 2, y = ey - h / 2;
+  c.fillStyle = "#fff";
+  rrect(c, x, y, w, h, 7); c.fill();
+  c.fillStyle = "#000";
+  if (cur.tired > 0.02 && h > 4) {
+    const outer = y + h * 0.6 * cur.tired, inner = y + h * 0.15 * cur.tired;
+    c.beginPath();
+    c.moveTo(x - 2, y - 2); c.lineTo(x + w + 2, y - 2);
+    if (side < 0) { c.lineTo(x + w + 2, inner); c.lineTo(x - 2, outer); }
+    else { c.lineTo(x + w + 2, outer); c.lineTo(x - 2, inner); }
+    c.closePath(); c.fill();
+  }
+  if (cur.happy > 0.02 && h > 4) {
+    const cy = y + h + h * 0.5 * (1 - cur.happy) + h * 0.05;
+    c.beginPath(); c.ellipse(ex, cy, w * 0.75, h * 0.55, 0, 0, Math.PI * 2); c.fill();
+  }
+}
+
+function drawFace(now, b) {
+  const c = bctx;
+  c.fillStyle = "#000"; c.fillRect(0, 0, BW, BH);
+  const lx = cur.x * (20 - cur.wow * 9), ly = cur.y * 12;
+  const cx = BW / 2 + lx;
+  const cy = BH / 2 - Math.min(14, BH * 0.08) + ly;
+  const gap = 21 + cur.wow * 3;
+
+  drawEye(c, cx - gap, cy, -1, b);
+  drawEye(c, cx + gap, cy, 1, b);
+
+  c.fillStyle = "#fff";
+  // indikator berpikir: tiga titik berjalan
+  if (mode === "thinking") {
+    const step = Math.floor(now / 250) % 4;
+    for (let i = 0; i < 3; i++) if (i < step) c.fillRect(Math.round(BW / 2 - 8 + i * 7), Math.round(cy - 36), 3, 3);
+  }
+  // indikator mendengar: bar suara di atas mata
+  if (mode === "listening") {
+    for (let i = 0; i < 5; i++) {
+      const hh = 2 + Math.round((Math.sin(now / 120 + i * 1.3) + 1) * 3);
+      c.fillRect(BW / 2 - 12 + i * 5, Math.round(cy - 32 - hh), 3, hh);
+    }
+  }
+
+  const ny = cy + 26 + cur.wow * 3;
+  c.fillRect(Math.round(cx + lx * 0.15 - 1), Math.round(ny), 3, 2);
+
+  const mx = cx + lx * 0.2, my = ny + 10;
+  c.strokeStyle = "#fff"; c.lineWidth = 2; c.lineCap = "round";
+  if (mode === "speaking") {
+    const a = (0.5 + 0.5 * Math.sin(now / 85)) * (0.55 + 0.45 * Math.sin(now / 230));
+    const mh = 2 + a * 9;
+    rrect(c, mx - 7, my - mh / 2 + 2, 14, mh, 3); c.fill();
+  } else if (mode === "listening") {
+    rrect(c, mx - 3, my - 1, 7, 7, 3); c.stroke();
+  } else if (mode === "thinking") {
+    c.fillRect(Math.round(mx - 4 + Math.sin(now / 300) * 3), Math.round(my + 1), 8, 2);
+  } else if (cur.wow > 0.5) {
+    rrect(c, mx - 5, my - 2, 10, 11, 4); c.stroke();
+  } else if (cur.happy > 0.45) {
+    c.beginPath(); c.arc(mx, my - 6, 9, Math.PI * 0.2, Math.PI * 0.8); c.stroke();
+  } else {
+    const wob = cur.tired > 0.5 ? Math.round(Math.sin(now / 400)) : 0;
+    c.fillRect(Math.round(mx - 6), Math.round(my + wob), 12, 2);
+  }
+
+  const img = c.getImageData(0, 0, BW, BH), d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i] > 110) { d[i] = LIT[0]; d[i + 1] = LIT[1]; d[i + 2] = LIT[2]; d[i + 3] = 255; }
+    else d[i + 3] = 0;
+  }
+  c.putImageData(img, 0, 0);
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  detect(now);
+
+  if (!target.face && now - touchAt > 1500) {
+    if (now > idleT) {
+      idleTarget = { x: (Math.random() * 2 - 1) * 0.9, y: (Math.random() * 2 - 1) * 0.6 };
+      idleT = now + 700 + Math.random() * 2200;
+    }
+    target.x = idleTarget.x; target.y = idleTarget.y;
+    target.close = lerp(target.close, 0.1, 0.02);
+  }
+
+  // selesai bicara → kembali diam
+  if (mode === "speaking" && !pendingSpeech && !speechSynthesis.speaking) {
+    setMode("idle");
+    if (cfg.wake && wantListen) setTimeout(() => startListening(false), 300);
+  }
+
+  let tx = target.x, ty = target.y;
+  if (mode === "thinking") { tx = Math.sin(now / 450) * 0.8; ty = -0.75; }   // melirik ke atas saat mikir
+  cur.x = lerp(cur.x, tx, 0.3);
+  cur.y = lerp(cur.y, ty, 0.3);
+  cur.close = lerp(cur.close, target.close, 0.1);
+
+  const f = target.face, c = cur.close, alarm = now < alarmUntil;
+  let wW, wH, wT;
+  if (alarm)                 { wW = 1;   wH = 0;   wT = 0; }
+  else if (mode === "listening") { wW = 0.55; wH = 0; wT = 0; }
+  else if (mode === "thinking")  { wW = 0;   wH = 0;   wT = 0.25; }
+  else if (mode === "speaking")  { wW = 0;   wH = 0.5; wT = 0; }
+  else {
+    wW = f && c > 0.65 ? 1 : 0;
+    wH = f && c > 0.22 && c <= 0.65 ? 1 : 0;
+    wT = !f ? 0.7 : c < 0.15 ? 0.5 : 0;
+  }
+  cur.wow = lerp(cur.wow, wW, 0.15);
+  cur.happy = lerp(cur.happy, wH, 0.1);
+  cur.tired = lerp(cur.tired, wT, 0.06);
+
+  if (now > nextBlink) { blink = 1; nextBlink = now + 1800 + Math.random() * 3500; }
+  blink = Math.max(0, blink - 0.15);
+  const b = blink > 0 ? Math.sin(blink * Math.PI) : 0;
+
+  drawFace(now, b);
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cvs.width, cvs.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.save();
+  ctx.shadowColor = `rgba(${LIT[0]},${LIT[1]},${LIT[2]},.7)`;
+  ctx.shadowBlur = PS * 3;
+  ctx.drawImage(buf, OX, OY, BW * PS, BH * PS);
+  ctx.restore();
+  ctx.drawImage(grid, OX, OY);
+
+  hud.textContent =
+    mode === "listening" ? "mendengarkan…" :
+    mode === "thinking" ? "berpikir…" :
+    mode === "speaking" ? "bicara… (ketuk untuk berhenti)" :
+    cfg.wake && recActive ? 'katakan "halo robot"' :
+    target.face ? (cur.wow > 0.5 ? "! terlalu dekat !" : "ketuk layar untuk bicara") :
+    "ketuk layar untuk bicara";
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
