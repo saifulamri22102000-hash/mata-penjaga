@@ -318,7 +318,10 @@ function startListening(command) {
 }
 function stopListening() { awaitingCommand = false; if (rec && recActive) { try { rec.abort(); } catch {} } }
 
-function setMode(m) { mode = m; }
+let modeAt = performance.now(), capAt = performance.now();
+function setMode(m) { if (m !== mode) modeAt = performance.now(); mode = m; }
+new MutationObserver(() => { capAt = performance.now(); })
+  .observe(capBot, { childList: true, characterData: true, subtree: true });
 
 // ---------- perintah bawaan ----------
 const HARI = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
@@ -333,6 +336,117 @@ function getPos() {
     : rej(new Error("no geo")));
 }
 
+// ---------- alarm & pengingat (tersimpan di HP) ----------
+let alarms = [];
+try { alarms = JSON.parse(localStorage.getItem("mataAlarms") || "[]"); } catch {}
+function saveAlarms() { try { localStorage.setItem("mataAlarms", JSON.stringify(alarms)); } catch {} }
+let ringing = null, ringBeepAt = 0;
+const pad = n => String(n).padStart(2, "0");
+const fmtTime = ms => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+
+function whenSpoken(ms) {
+  const d = new Date(ms), now = new Date(), tom = new Date(now);
+  tom.setDate(now.getDate() + 1);
+  const day = d.toDateString() === now.toDateString() ? "hari ini"
+    : d.toDateString() === tom.toDateString() ? "besok"
+    : `hari ${HARI[d.getDay()]} tanggal ${d.getDate()}`;
+  const h = d.getHours(), h12 = h % 12 || 12;
+  const part = h < 4 ? "dini hari" : h < 11 ? "pagi" : h < 15 ? "siang" : h < 18 ? "sore" : "malam";
+  return `${day} jam ${h12}${d.getMinutes() ? " lewat " + d.getMinutes() + " menit" : ""} ${part}`;
+}
+
+function addAlarm(at, label) {
+  alarms.push({ id: Date.now() + Math.random(), at, label });
+  alarms.sort((a, b) => a.at - b.at);
+  saveAlarms();
+}
+
+// "jam 6 pagi", "jam 7.30 malam", "jam 8 lewat 15 menit", "besok jam 5" → waktu berikutnya
+function parseClock(t, nowMs = Date.now()) {
+  const m = t.match(/(?:jam|pukul)\s*(\d{1,2})(?:[:.](\d{2}))?(?:\s*(?:lewat|lebih)\s*(\d{1,2})(?:\s*menit)?)?(?:\s*(pagi|siang|sore|malam))?/);
+  if (!m) return null;
+  let h = +m[1];
+  const mi = +(m[2] || m[3] || 0), part = m[4];
+  if (h > 23 || mi > 59) return null;
+  if (part === "pagi" && h === 12) h = 0;
+  if (part === "siang" && h < 11) h += 12;
+  if (part === "sore" && h < 12) h += 12;
+  if (part === "malam") { if (h >= 6 && h < 12) h += 12; else if (h === 12) h = 0; }
+  const d = new Date(nowMs); d.setSeconds(0, 0); d.setHours(h, mi);
+  if (/besok/.test(t)) d.setDate(d.getDate() + 1);
+  else if (d.getTime() <= nowMs) {
+    // "jam 5" saat sudah lewat jam 5 pagi → kemungkinan maksudnya jam 5 sore
+    if (!part && h < 12 && d.getTime() + 12 * 3600000 > nowMs) d.setHours(h + 12);
+    else d.setDate(d.getDate() + 1);
+  }
+  return { at: d.getTime(), phrase: m[0] };
+}
+
+// "10 menit", "dalam 2 jam lagi", "30 detik"
+function parseRelative(t, nowMs = Date.now()) {
+  const m = t.match(/(\d+)\s*(detik|menit|jam)(?:\s*lagi)?/);
+  if (!m) return null;
+  const n = +m[1], unit = m[2];
+  return { at: nowMs + n * (unit === "detik" ? 1000 : unit === "menit" ? 60000 : 3600000), phrase: m[0], n, unit };
+}
+
+function alarmCommand(t) {
+  if (/(hapus|batalkan|matikan) (semua )?(alarm|pengingat|timer)/.test(t)) {
+    const n = alarms.length; alarms = []; saveAlarms();
+    return n ? `Oke, ${n} alarm dan pengingat sudah dihapus.` : "Tidak ada alarm yang tersimpan.";
+  }
+  if (/(alarm|pengingat|timer)(nya)? (apa saja|yang ada)|daftar (alarm|pengingat)|ada (alarm|pengingat)/.test(t)) {
+    if (!alarms.length) return "Tidak ada alarm atau pengingat.";
+    return `Ada ${alarms.length}. ` + alarms.slice(0, 5).map(a => `${a.label} ${whenSpoken(a.at)}`).join(". ") + ".";
+  }
+  const isTimer = /(timer|hitung mundur)/.test(t);
+  const isAlarm = /(alarm|bangunkan|bangunin)/.test(t);
+  const isRemind = /(ingatkan|ingetin|pengingat)/.test(t);
+  if (!isTimer && !isAlarm && !isRemind) return null;
+  const clock = /(jam|pukul)\s*\d/.test(t) ? parseClock(t) : null;
+  const when = clock || parseRelative(t);
+  if (!when) return "Jam berapa? Contohnya: bangunkan aku jam 6 pagi, atau timer 10 menit.";
+  if (isTimer && !clock) {
+    addAlarm(when.at, `timer ${when.n} ${when.unit}`);
+    return `Oke, timer ${when.n} ${when.unit} dimulai.`;
+  }
+  let label = isAlarm && !isRemind ? "alarm" : "";
+  if (isRemind) {
+    label = t.replace(when.phrase, " ")
+      .replace(/^.*?(ingatkan|ingetin|pengingat)(\s+(aku|saya|ku|gue))?(\s+(untuk|buat|kalau|agar|supaya|bahwa))?/, "")
+      .replace(/\b(dalam|nanti|besok|hari ini|lagi|ya|tolong)\b/g, " ")
+      .replace(/[.,!?]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  addAlarm(when.at, label || "pengingat");
+  return label && label !== "alarm"
+    ? `Oke, aku ingatkan ${label} ${whenSpoken(when.at)}.`
+    : `Oke, alarm dipasang ${whenSpoken(when.at)}.`;
+}
+
+function checkAlarms() {
+  if (ringing || !alarms.length) return;
+  const now = Date.now();
+  // terlewat lebih dari 1 jam saat aplikasi tertutup → buang
+  let changed = false;
+  while (alarms.length && alarms[0].at < now - 3600000) { alarms.shift(); changed = true; }
+  if (changed) saveAlarms();
+  if (!alarms.length || alarms[0].at > now) return;
+  const a = alarms.shift(); saveAlarms();
+  const late = now - a.at > 60000;
+  const d = new Date();
+  const msg = a.label.startsWith("timer") ? `Waktu ${a.label} sudah habis!`
+    : a.label === "alarm" ? `Bangun! Sekarang jam ${d.getHours()}${d.getMinutes() ? " lewat " + d.getMinutes() + " menit" : ""}.`
+    : a.label === "pengingat" ? "Ini pengingatmu."
+    : `Pengingat: ${a.label}.`;
+  ringing = { until: performance.now() + 60000 };
+  ringBeepAt = performance.now() + 2500;
+  capYou.textContent = "";
+  capBot.textContent = (late ? "Terlewat. " : "") + msg + " Ketuk layar untuk mematikan.";
+  stopListening();
+  say((late ? "Ada pengingat yang terlewat. " : "") + msg);
+}
+function stopRinging() { ringing = null; stopSpeaking(); setMode("idle"); capBot.textContent = "Alarm dimatikan."; }
+
 async function local(text) {
   const t = text.toLowerCase();
   const now = new Date();
@@ -341,13 +455,8 @@ async function local(text) {
     return `Sekarang jam ${now.getHours()} lewat ${now.getMinutes()} menit.`;
   if (/(hari|tanggal) (apa|berapa)|tanggal sekarang/.test(t))
     return `Hari ini ${HARI[now.getDay()]}, ${now.getDate()} ${BULAN[now.getMonth()]} ${now.getFullYear()}.`;
-  const tm = t.match(/(timer|pengingat|alarm|hitung mundur)\D*(\d+)\s*(detik|menit|jam)/);
-  if (tm) {
-    const n = +tm[2], unit = tm[3];
-    const ms = n * (unit === "detik" ? 1000 : unit === "menit" ? 60000 : 3600000);
-    setTimeout(() => { alarmUntil = performance.now() + 4000; beep(988, 150, 6); say(`Waktu ${n} ${unit} sudah habis!`); }, ms);
-    return `Oke, timer ${n} ${unit} dimulai.`;
-  }
+  const al = alarmCommand(t);
+  if (al !== null) return al;
   if (/cuaca|hujan (tidak|nggak|gak|enggak)|panas (tidak|nggak|gak)/.test(t)) {
     try {
       const p = await getPos();
@@ -382,7 +491,10 @@ Jawabanmu akan dibacakan dengan suara, jadi:
 - Singkat: 1 sampai 3 kalimat, kecuali pengguna minta penjelasan panjang.
 - Teks biasa saja. Jangan pakai markdown, daftar berpoin, emoji, atau simbol.
 - Tulis angka dan satuan supaya enak dibaca keras.
-- Kamu tidak punya akses internet. Kalau ditanya berita atau data terbaru, bilang terus terang.`;
+- Kamu tidak bisa memasang alarm sendiri. Kalau diminta, sarankan pengguna bilang misalnya "bangunkan aku jam 6 pagi" atau "ingatkan aku minum obat jam 8 malam".`;
+const sysPrompt = net => SYSTEM + (net
+  ? "\n- Kamu bisa mencari di Google. Pakai pencarian untuk berita, cuaca, skor, harga, jadwal, atau info terbaru lainnya, lalu jawab singkat tanpa membacakan link atau nama situs."
+  : "\n- Kamu tidak punya akses internet. Kalau ditanya berita atau data terbaru, bilang terus terang.");
 
 // bacakan per kalimat selagi jawaban masih mengalir
 function makeSpeaker() {
@@ -423,7 +535,8 @@ async function pickGeminiModel() {
   return ok[0].name.replace(/^models\//, "");
 }
 
-async function askGemini(text, retried) {
+// opts.noSearch: tanpa Google Search (cadangan kalau pencarian ditolak/kuota habis)
+async function askGemini(text, opts = {}) {
   if (!cfg.geminiKey) return NO_KEY;
   if (gHistory.length > 40) gHistory = [];
   const now = new Date();
@@ -436,8 +549,9 @@ async function askGemini(text, retried) {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": cfg.geminiKey },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
+        systemInstruction: { parts: [{ text: sysPrompt(!opts.noSearch) }] },
         contents: [...gHistory, userMsg],
+        ...(opts.noSearch ? {} : { tools: [{ google_search: {} }] }),
         generationConfig: { maxOutputTokens: 4096, temperature: 0.8 },
       }),
     });
@@ -467,9 +581,13 @@ async function askGemini(text, retried) {
   } catch (e) {
     console.error(e);
     // model lama sudah tidak ada → pilih ulang sekali
-    if (e.status === 404 && !retried && !full) { cfg.geminiModel = ""; return askGemini(text, true); }
+    if (e.status === 404 && !opts.retriedModel && !full) { cfg.geminiModel = ""; return askGemini(text, { ...opts, retriedModel: true }); }
+    const badKey = /API_KEY_INVALID|API key not valid/i.test(e.message || "");
+    // pencarian Google ditolak atau kuotanya habis → jawab tanpa pencarian
+    if ((e.status === 400 || e.status === 429) && !badKey && !opts.noSearch && !full)
+      return askGemini(text, { ...opts, noSearch: true });
     stopSpeaking();
-    if (e.status === 400 || e.status === 401 || e.status === 403) return "API key Gemini tidak valid. Cek lagi di pengaturan.";
+    if (badKey || e.status === 400 || e.status === 401 || e.status === 403) return "API key Gemini tidak valid. Cek lagi di pengaturan.";
     if (e.status === 429) return "Kuota gratis Gemini sudah habis untuk sekarang. Coba lagi nanti.";
     if (e.status >= 500) return "Server Gemini sedang sibuk. Coba lagi ya.";
     if (e.status === 404) return "Tidak ada model Gemini yang bisa dipakai key ini.";
@@ -487,7 +605,7 @@ async function askClaude(text) {
   const params = {
     model: cfg.model,
     max_tokens: 1024,
-    system: SYSTEM,
+    system: sysPrompt(false),
     messages: [...history, userMsg],
     output_config: { effort: "low" },
   };
@@ -531,6 +649,7 @@ async function handle(text) {
 addEventListener("click", e => {
   if (e.target.closest("#start, #settings, #gear")) return;
   if (actx?.state === "suspended") actx.resume();
+  if (ringing) { stopRinging(); return; }
   if (mode === "speaking") { stopSpeaking(); setMode("idle"); return; }
   if (mode === "listening") { stopListening(); return; }
   if (mode === "thinking") return;
@@ -677,17 +796,46 @@ function drawFace(now, b) {
     c.fillRect(Math.round(mx - 6), Math.round(my + wob), 12, 2);
   }
 
+  // mode jam meja: jam besar di bawah wajah saat diam
+  if (BH >= 110 && mode === "idle" && !ringing) {
+    const d = new Date();
+    c.fillStyle = "#fff"; c.textAlign = "center"; c.textBaseline = "alphabetic";
+    const clockY = Math.round(Math.min(BH - 34, my + 52));
+    c.font = "bold 24px ui-monospace, 'Courier New', monospace";
+    c.fillText(`${pad(d.getHours())}${d.getSeconds() % 2 ? ":" : " "}${pad(d.getMinutes())}`, BW / 2, clockY);
+    c.font = "bold 9px ui-monospace, 'Courier New', monospace";
+    c.fillText(`${HARI[d.getDay()].slice(0, 3).toUpperCase()} ${d.getDate()} ${BULAN[d.getMonth()].slice(0, 3).toUpperCase()}`, BW / 2, clockY + 13);
+    if (alarms.length) c.fillText(`ALARM ${fmtTime(alarms[0].at)}`, BW / 2, clockY + 25);
+  }
+
+  // malam hari saat diam: layar diredupkan
+  const L = isNight() && mode === "idle" && !ringing ? LIT.map(v => Math.round(v * 0.45)) : LIT;
   const img = c.getImageData(0, 0, BW, BH), d = img.data;
   for (let i = 0; i < d.length; i += 4) {
-    if (d[i] > 110) { d[i] = LIT[0]; d[i + 1] = LIT[1]; d[i + 2] = LIT[2]; d[i + 3] = 255; }
+    if (d[i] > 110) { d[i] = L[0]; d[i + 1] = L[1]; d[i + 2] = L[2]; d[i + 3] = 255; }
     else d[i + 3] = 0;
   }
   c.putImageData(img, 0, 0);
 }
 
+const isNight = () => { const h = new Date().getHours(); return h >= 22 || h < 5; };
+let alarmCheckAt = 0;
+
 function frame(now) {
   requestAnimationFrame(frame);
   detect(now);
+
+  // alarm & pengingat
+  if (now > alarmCheckAt) { alarmCheckAt = now + 500; checkAlarms(); }
+  if (ringing) {
+    alarmUntil = now + 500;                          // mata kaget selama berbunyi
+    if (now > ringing.until) stopRinging();
+    else if (now > ringBeepAt) { beep(988, 150, 3); ringBeepAt = now + 2000; }
+  }
+
+  // teks di bawah layar hilang sendiri setelah 20 detik diam
+  if (mode === "idle" && !ringing && now - capAt > 20000 && now - modeAt > 5000 &&
+      (capBot.textContent || capYou.textContent)) { capBot.textContent = ""; capYou.textContent = ""; }
 
   if (!target.face && now - touchAt > 1500) {
     if (now > idleT) {
@@ -701,7 +849,7 @@ function frame(now) {
   // selesai bicara → kembali diam
   if (mode === "speaking" && !pendingSpeech && !speechSynthesis.speaking) {
     setMode("idle");
-    if (cfg.wake && wantListen) setTimeout(() => startListening(false), 300);
+    if (cfg.wake && wantListen && !ringing) setTimeout(() => startListening(false), 300);
   }
 
   let tx = target.x, ty = target.y;
@@ -720,6 +868,7 @@ function frame(now) {
     wW = f && c > 0.65 ? 1 : 0;
     wH = f && c > 0.22 && c <= 0.65 ? 1 : 0;
     wT = !f ? 0.7 : c < 0.15 ? 0.5 : 0;
+    if (isNight() && !(f && c > 0.4)) { wT = Math.max(wT, 0.8); wH = 0; }   // malam: mengantuk
   }
   cur.wow = lerp(cur.wow, wW, 0.15);
   cur.happy = lerp(cur.happy, wH, 0.1);
@@ -742,6 +891,7 @@ function frame(now) {
   ctx.drawImage(grid, OX, OY);
 
   hud.textContent =
+    ringing ? "! alarm ! ketuk untuk mematikan" :
     mode === "listening" ? "mendengarkan…" :
     mode === "thinking" ? "berpikir…" :
     mode === "speaking" ? "bicara… (ketuk untuk berhenti)" :
