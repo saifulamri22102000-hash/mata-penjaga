@@ -53,7 +53,7 @@
   #settings .box { background: var(--panel); border: 1px solid var(--muted); border-radius: 6px; display: grid; gap: 14px; }
   #settings label { display: grid; gap: 6px; font-size: 14px; color: #cdeff2; }
   #settings label.row { grid-template-columns: auto 1fr; align-items: center; gap: 10px; }
-  #settings input[type=password], #settings select { font: inherit; font-size: 15px; padding: 10px; border-radius: 4px;
+  #settings input[type=password], #settings input[type=text], #settings select { font: inherit; font-size: 15px; padding: 10px; border-radius: 4px;
     border: 1px solid var(--muted); background: #000; color: var(--fg); width: 100%; }
   #settings input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
   .note { font-size: 12px; color: #8fb8bc; line-height: 1.45; margin: 0; }
@@ -108,6 +108,15 @@
     <p class="note">Key disimpan hanya di browser HP ini. Siapa pun yang memegang HP ini bisa memakainya. Tanpa key, hanya perintah bawaan yang jalan (jam, tanggal, timer, cuaca).</p>
     <label class="row"><input type="checkbox" id="wake"> Selalu dengar, panggil "Halo robot"</label>
     <label class="row"><input type="checkbox" id="showCam"> Tampilkan kamera kecil</label>
+    <label class="row"><input type="checkbox" id="advanced"> Mode canggih: baca ekspresi wajah & tangan</label>
+    <p class="note">Dibutuhkan untuk meniru ekspresi, lomba tatap, suit, dan gestur tangan. Lebih berat: HP cepat panas dan boros baterai.</p>
+    <label>Namamu
+      <input type="text" id="petName" autocomplete="off" maxlength="20" placeholder="Robot akan memanggilmu dengan nama ini">
+    </label>
+    <label>Warna layar
+      <select id="color"></select>
+    </label>
+    <p class="note" id="petInfo"></p>
     <div class="actions">
       <button type="button" class="main" id="setClose">TUTUP</button>
       <button type="submit" class="main">SIMPAN</button>
@@ -116,11 +125,19 @@
 </div>
 
 <script type="module">
-import { FaceDetector, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { FaceDetector, FaceLandmarker, GestureRecognizer, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 import Anthropic from "https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.8.0/+esm";
 
 // Warna piksel OLED yang menyala
-const LIT = [125, 249, 255];
+// (bisa berganti sesuai warna yang dipilih; warna baru terbuka dari level persahabatan)
+let LIT = [125, 249, 255];
+const COLORS = {
+  cyan:   { rgb: [125, 249, 255], level: 1, label: "Cyan" },
+  putih:  { rgb: [255, 255, 255], level: 2, label: "Putih" },
+  hijau:  { rgb: [120, 255, 140], level: 3, label: "Hijau" },
+  pink:   { rgb: [255, 140, 200], level: 4, label: "Merah muda" },
+  kuning: { rgb: [255, 215, 80],  level: 6, label: "Kuning" },
+};
 
 const $ = id => document.getElementById(id);
 
@@ -149,8 +166,50 @@ const video = $("cam"), hud = $("hud"), errEl = $("err");
 const capYou = $("capYou"), capBot = $("capBot");
 
 // ---------- pengaturan (localStorage, aman bila diblokir) ----------
-const cfg = { provider: "gemini", geminiKey: "", geminiModel: "", apiKey: "", model: "claude-opus-5-5", wake: false, showCam: true };
+const cfg = { provider: "gemini", geminiKey: "", geminiModel: "", apiKey: "", model: "claude-opus-5-5", wake: false, showCam: true, advanced: true, color: "cyan" };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem("mataCfg") || "{}")); } catch {}
+
+// ---------- persahabatan (seperti hewan peliharaan) ----------
+const pet = { name: "", xp: 0, lastDay: "", lastInteract: 0, stareMe: 0, stareYou: 0, suitMe: 0, suitYou: 0 };
+try { Object.assign(pet, JSON.parse(localStorage.getItem("mataPet") || "{}")); } catch {}
+function savePet() { try { localStorage.setItem("mataPet", JSON.stringify(pet)); } catch {} }
+const LEVEL_XP = 30, MAX_LEVEL = 10;
+const level = () => Math.min(MAX_LEVEL, 1 + Math.floor(pet.xp / LEVEL_XP));
+const STAR_LEVEL = 5;                                  // mata bintang terbuka di level 5
+function applyColor() {
+  const c = COLORS[cfg.color];
+  LIT = c && level() >= c.level ? c.rgb : COLORS.cyan.rgb;
+}
+applyColor();
+const xpCool = {};
+let sulking = false, sulkPets = 0;
+function gainXP(n, kind) {
+  const now = performance.now();
+  if (kind && now - (xpCool[kind] || 0) < 5000) return;   // jeda supaya poin tidak bisa dikumpulkan asal-asalan
+  if (kind) xpCool[kind] = now;
+  const before = level();
+  pet.xp += n; pet.lastInteract = Date.now(); savePet();
+  const after = level();
+  if (after > before) levelUp(after);
+}
+function celebrate(ms = 2500) {
+  setReact(level() >= STAR_LEVEL ? "star" : "heart", ms);
+  addParticles("heart", 5);
+}
+function levelUp(lv) {
+  celebrate(3500);
+  beep(784, 90, 1); setTimeout(() => beep(988, 90, 1), 180); setTimeout(() => beep(1319, 160, 1), 360);
+  const gift = Object.entries(COLORS).find(([, c]) => c.level === lv);
+  const extra = gift ? ` Hadiahnya: warna layar ${gift[1].label.toLowerCase()}. Pilih di pengaturan.`
+    : lv === STAR_LEVEL ? " Hadiahnya: mata bintang saat aku senang sekali!" : "";
+  const msg = `Yay${pet.name ? ", " + pet.name : ""}! Kita makin akrab, sekarang level ${lv}.${extra}`;
+  capYou.textContent = ""; capBot.textContent = msg; say(msg);
+}
+function ctxLine() {
+  const now = new Date();
+  return `[Waktu sekarang: ${HARI[now.getDay()]}, ${now.toLocaleString("id-ID")}]` +
+    `[Nama pengguna: ${pet.name || "belum tahu"}. Level persahabatan: ${level()} dari ${MAX_LEVEL}.]`;
+}
 function saveCfg() { try { localStorage.setItem("mataCfg", JSON.stringify(cfg)); } catch {} }
 
 // ---------- buffer OLED ----------
@@ -248,9 +307,22 @@ addEventListener("pointermove", e => {
   if (dir) lastDir = dir;
   if (strokeLen > 200 && reversals >= 2) { strokeLen = 0; reversals = 0; stroked = true; onPet(); }
 });
+function forgive() {
+  sulking = false; sulkPets = 0;
+  setEmotion("cinta", 3000); gainXP(2);
+  const m = `Ya sudah, aku maafkan${pet.name ? ", " + pet.name : ""}. Jangan lama-lama lagi ya!`;
+  capBot.textContent = m; say(m);
+}
 function onPet() {
   const now = performance.now();
   wake();
+  gainXP(1, "pet");
+  if (sulking) {                                     // dibujuk dengan dielus 3 kali
+    if (now - lastPetAt > 1200) sulkPets++;
+    lastPetAt = now;
+    if (sulkPets >= 3) forgive(); else setEmotion("marah", 1500);
+    return;
+  }
   setEmotion("senang", 2500);
   addParticles("heart", 3);
   if (now - lastPetAt > 1200) beep(660, 60, 2);
@@ -287,39 +359,260 @@ function onShake() {
   sayReact(["Waaa, pusing!", "Berhenti, aku mual!", "Dunia berputar…"], 1);
 }
 
-// ---------- kamera + deteksi wajah ----------
-let detector = null, lastVideoTime = -1;
+// ---------- kamera + deteksi wajah & tangan ----------
+// Mode biasa: pendeteksi wajah ringan. Mode canggih: baca ekspresi wajah + gestur tangan (lebih berat).
+const MP = "https://storage.googleapis.com/mediapipe-models";
+let fileset = null, detector = null, landmarker = null, gestures = null;
+let lastVideoTime = -1, vfCount = 0;
+const faceInfo = { smile: 0, jaw: 0, blinkL: 0, blinkR: 0, nx: 0.5, ny: 0.5 };
+const handInfo = { name: "", x: 0, at: 0 };
+
+async function loadModels() {
+  fileset ??= await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  if (cfg.advanced) {
+    landmarker ??= await FaceLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: `${MP}/face_landmarker/face_landmarker/float16/1/face_landmarker.task`, delegate: "GPU" },
+      runningMode: "VIDEO", numFaces: 1, outputFaceBlendshapes: true,
+    });
+    gestures ??= await GestureRecognizer.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: `${MP}/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task`, delegate: "GPU" },
+      runningMode: "VIDEO", numHands: 1,
+    });
+  } else {
+    detector ??= await FaceDetector.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: `${MP}/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite`, delegate: "GPU" },
+      runningMode: "VIDEO", minDetectionConfidence: 0.5,
+    });
+  }
+}
+const canSeeDetail = () => cfg.advanced && !!landmarker;
+const canSeeHands = () => cfg.advanced && !!gestures;
+
 async function startCamera() {
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
   });
   video.srcObject = stream;
   await video.play();
-  const fileset = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-  detector = await FaceDetector.createFromOptions(fileset, {
-    baseOptions: {
-      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
-      delegate: "GPU"
-    },
-    runningMode: "VIDEO", minDetectionConfidence: 0.5
-  });
   video.hidden = !cfg.showCam;
+  try { await loadModels(); }
+  catch (e) {
+    // model canggih gagal dimuat (HP terlalu lama) → pakai mode biasa
+    console.warn(e);
+    if (cfg.advanced) { cfg.advanced = false; await loadModels(); capBot.textContent = "Mode canggih tidak bisa jalan di HP ini, pakai mode biasa."; }
+    else throw e;
+  }
 }
 
 function detect(now) {
-  if (!detector || video.readyState < 2 || video.currentTime === lastVideoTime) return;
+  if (video.readyState < 2 || video.currentTime === lastVideoTime) return;
   lastVideoTime = video.currentTime;
-  const d = detector.detectForVideo(video, now).detections?.[0];
-  if (d) {
-    const b = d.boundingBox, vw = video.videoWidth, vh = video.videoHeight;
-    const cx = (b.originX + b.width / 2) / vw, cy = (b.originY + b.height / 2) / vh;
-    target.x = clamp((0.5 - cx) * 2.4, -1, 1);
-    target.y = clamp((cy - 0.42) * 2.4, -1, 1);
-    target.close = clamp((b.width / vw - 0.15) / 0.4, 0, 1);
+  vfCount++;
+  let box = null;
+  if (canSeeDetail()) {
+    // tangan dibaca bergantian dengan wajah supaya HP tidak terlalu berat
+    if (canSeeHands() && vfCount % 2) { detectHand(now); return; }
+    const r = landmarker.detectForVideo(video, now);
+    const lm = r.faceLandmarks?.[0];
+    if (lm) {
+      let x0 = 1, x1 = 0, y0 = 1, y1 = 0;
+      for (const p of lm) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+      box = { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0 };
+      const bs = {};
+      for (const c of r.faceBlendshapes?.[0]?.categories || []) bs[c.categoryName] = c.score;
+      faceInfo.smile = ((bs.mouthSmileLeft || 0) + (bs.mouthSmileRight || 0)) / 2;
+      faceInfo.jaw = bs.jawOpen || 0;
+      faceInfo.blinkL = bs.eyeBlinkLeft || 0;
+      faceInfo.blinkR = bs.eyeBlinkRight || 0;
+      faceInfo.nx = lm[1].x; faceInfo.ny = lm[1].y;       // ujung hidung, untuk angguk/geleng
+    }
+  } else if (detector) {
+    const d = detector.detectForVideo(video, now).detections?.[0];
+    if (d) {
+      const b = d.boundingBox, vw = video.videoWidth, vh = video.videoHeight;
+      box = { cx: (b.originX + b.width / 2) / vw, cy: (b.originY + b.height / 2) / vh, w: b.width / vw };
+    }
+  }
+  if (box) {
+    target.x = clamp((0.5 - box.cx) * 2.4, -1, 1);
+    target.y = clamp((box.cy - 0.42) * 2.4, -1, 1);
+    target.close = clamp((box.w - 0.15) / 0.4, 0, 1);
     target.face = true;
     lastFaceAt = now;
+    if (canSeeDetail()) onFaceFrame(now);
   } else if (now - lastFaceAt > 600) target.face = false;
+}
+
+function detectHand(now) {
+  const r = gestures.recognizeForVideo(video, now);
+  const g = r.gestures?.[0]?.[0], lm = r.landmarks?.[0];
+  if (g && lm && g.categoryName !== "None") {
+    handInfo.name = g.categoryName; handInfo.x = lm[0].x; handInfo.at = now;
+    onHandFrame(now);
+  } else if (now - handInfo.at > 400) handInfo.name = "";
+}
+
+// ---------- meniru ekspresi ----------
+let blinkDown = false, smileSince = 0, jawSince = 0, mimicSayAt = 0;
+let wink = { side: 0, until: 0 }, headAnim = { type: "", until: 0 };
+const noseHist = [];
+// hitung berapa kali gerakan berbalik arah (untuk angguk, geleng, lambaian)
+function countReversals(hist, key, minMove) {
+  if (!hist.length) return 0;
+  let n = 0, dir = 0, ext = hist[0][key];
+  for (const p of hist) {
+    if (Math.abs(p[key] - ext) > minMove) {
+      const d = Math.sign(p[key] - ext);
+      if (dir && d !== dir) n++;
+      dir = d; ext = p[key];
+    }
+  }
+  return n;
+}
+function onFaceFrame(now) {
+  const both = faceInfo.blinkL > 0.5 && faceInfo.blinkR > 0.5;
+  if (stare.on) { if (stare.phase === "go" && both) endStare(false); return; }
+  if (mode !== "idle" || sleeping || game.on) return;
+  // kedip balik
+  if (both && !blinkDown) { blinkDown = true; setTimeout(() => { blink = 1; }, 120); }
+  if (faceInfo.blinkL < 0.3 && faceInfo.blinkR < 0.3) blinkDown = false;
+  // kedip sebelah → balas kedip sebelah (seperti cermin)
+  const winkL = faceInfo.blinkL > 0.6 && faceInfo.blinkR < 0.25, winkR = faceInfo.blinkR > 0.6 && faceInfo.blinkL < 0.25;
+  if ((winkL || winkR) && now > wink.until + 700) { wink = { side: winkL ? -1 : 1, until: now + 500 }; gainXP(1, "wink"); }
+  // senyum → ikut senyum
+  if (faceInfo.smile > 0.55) {
+    smileSince ||= now;
+    if (now - smileSince > 300) setEmotion("senang", 800);
+    if (now - smileSince > 2500 && now - mimicSayAt > 30000) {
+      mimicSayAt = now; gainXP(1, "smile");
+      sayReact(pet.name ? [`Senyummu manis, ${pet.name}!`, "Hehe, kamu senang ya?"] : ["Senyummu manis!", "Hehe, kamu senang ya?"]);
+    }
+  } else smileSince = 0;
+  // mulut terbuka lebar → kaget
+  if (faceInfo.jaw > 0.55) { jawSince ||= now; if (now - jawSince > 250) setEmotion("kaget", 600); } else jawSince = 0;
+  // angguk / geleng → ikut
+  noseHist.push({ t: now, x: faceInfo.nx, y: faceInfo.ny });
+  while (noseHist.length && now - noseHist[0].t > 1200) noseHist.shift();
+  if (now > headAnim.until + 800 && noseHist.length > 8) {
+    const rx = countReversals(noseHist, "x", 0.025), ry = countReversals(noseHist, "y", 0.025);
+    if (ry >= 2 && rx < 2) { headAnim = { type: "nod", until: now + 1000 }; noseHist.length = 0; gainXP(1, "head"); }
+    else if (rx >= 2 && ry < 2) { headAnim = { type: "shake", until: now + 1000 }; noseHist.length = 0; gainXP(1, "head"); }
+  }
+}
+
+// ---------- gestur tangan ----------
+let handSince = { name: "", t: 0 }, lastHandReactAt = 0;
+const wristHist = [];
+const SUIT = { Closed_Fist: "batu", Open_Palm: "kertas", Victory: "gunting" };
+function onHandFrame(now) {
+  if (game.on) { if (game.phase === "shoot" && SUIT[handInfo.name]) game.user = SUIT[handInfo.name]; return; }
+  if (handInfo.name !== handSince.name) handSince = { name: handInfo.name, t: now };
+  const held = now - handSince.t;
+  if (handInfo.name === "Open_Palm") {
+    wristHist.push({ t: now, x: handInfo.x });
+    while (wristHist.length && now - wristHist[0].t > 1500) wristHist.shift();
+  } else wristHist.length = 0;
+  if (stare.on || (mode !== "idle" && !sleeping) || now - lastHandReactAt < 6000) return;
+  const hi = n => pet.name ? n.replace("!", `, ${pet.name}!`) : n;
+  // lambaian: telapak terbuka bergerak kiri-kanan
+  if (handInfo.name === "Open_Palm" && countReversals(wristHist, "x", 0.04) >= 2) {
+    wristHist.length = 0; lastHandReactAt = now;
+    wake(); setEmotion("senang", 2500); gainXP(1, "wave");
+    sayReact([hi("Dadah!"), hi("Halo juga!")]);
+  } else if (handInfo.name === "Thumb_Up" && held > 500) {
+    lastHandReactAt = now; setEmotion("senang", 2500); addParticles("heart", 2); gainXP(1, "thumb");
+    sayReact(["Mantap!", "Sip, makasih!", "Jempol balik!"]);
+  } else if (handInfo.name === "Thumb_Down" && held > 500) {
+    lastHandReactAt = now; setEmotion("sedih", 2500);
+    sayReact(["Yaah, maaf ya.", "Hmm, aku salah apa?"]);
+  } else if (handInfo.name === "ILoveYou" && held > 500) {
+    lastHandReactAt = now; setEmotion("cinta", 3000); gainXP(2, "love");
+    sayReact(["Aku juga sayang kamu!", "Aww, makasih!"]);
+  }
+}
+
+// ---------- permainan: lomba tatap & suit ----------
+const stare = { on: false, phase: "", t0: 0, robotBlinkAt: 0 };
+const game = { on: false, phase: "", t: 0, step: 0, user: "", robot: "" };
+const BEATS = { batu: "gunting", gunting: "kertas", kertas: "batu" };
+
+function startStare() {
+  if (!canSeeDetail()) return "Nyalakan mode canggih di pengaturan dulu supaya aku bisa melihat kedipanmu.";
+  if (!target.face) return "Aku tidak melihat wajahmu. Hadap ke kamera dulu ya.";
+  game.on = false;
+  Object.assign(stare, { on: true, phase: "ready" });
+  return "Oke, lomba tatap-tatapan! Siapa yang kedip duluan kalah. Siap, mulai!";
+}
+function endStare(userWon) {
+  const secs = ((performance.now() - stare.t0) / 1000).toFixed(1);
+  stare.on = false;
+  if (userWon) { pet.stareYou++; blink = 1; setEmotion("sedih", 3000); }
+  else { pet.stareMe++; celebrate(); }
+  gainXP(3, "game");
+  savePet();
+  const msg = (userWon ? `Yaah, aku kedip duluan! Kamu menang setelah ${secs} detik.` : `Kamu kedip! Aku menang setelah ${secs} detik.`) +
+    ` Skor tatap: kamu ${pet.stareYou}, aku ${pet.stareMe}.`;
+  capBot.textContent = msg; say(msg);
+}
+function startSuit() {
+  if (!canSeeHands()) return "Nyalakan mode canggih di pengaturan dulu supaya aku bisa melihat tanganmu.";
+  stare.on = false;
+  Object.assign(game, { on: true, phase: "intro", user: "", robot: "" });
+  return "Ayo main suit! Tunjukkan batu, gunting, atau kertas ke kamera pas hitungan ketiga.";
+}
+function cancelGames(msg) {
+  if (!stare.on && !game.on) return false;
+  stare.on = false; game.on = false;
+  capBot.textContent = msg; say(msg);
+  return true;
+}
+function gameTick(now) {
+  // lomba tatap: mulai setelah robot selesai bicara
+  if (stare.on) {
+    if (stare.phase === "ready" && mode === "idle") {
+      stare.phase = "go"; stare.t0 = now; stare.robotBlinkAt = now + 8000 + Math.random() * 22000; beep(1200, 80);
+    } else if (stare.phase === "go") {
+      if (now - lastFaceAt > 2000) cancelGames("Hei, jangan kabur! Lomba tatap dibatalkan.");
+      else if (now > stare.robotBlinkAt) endStare(true);
+    }
+  }
+  if (!game.on) return;
+  if (game.phase === "intro" && mode === "idle") { game.phase = "count"; game.t = now; game.step = 0; }
+  else if (game.phase === "count") {
+    const step = Math.floor((now - game.t) / 800) + 1;
+    if (step !== game.step && step <= 3) { game.step = step; beep(600 + step * 150, 90); }
+    if (now - game.t > 2400) { game.phase = "shoot"; game.t = now; game.user = SUIT[handInfo.name] && now - handInfo.at < 300 ? SUIT[handInfo.name] : ""; }
+  } else if (game.phase === "shoot" && now - game.t > 700) {
+    if (!game.user) {
+      game.on = false;
+      const m = "Aku tidak lihat tanganmu. Bilang main suit lagi untuk coba lagi.";
+      capBot.textContent = m; say(m); return;
+    }
+    game.robot = ["batu", "gunting", "kertas"][Math.floor(Math.random() * 3)];
+    game.phase = "show"; game.t = now;
+    let m;
+    if (game.user === game.robot) { m = `Aku ${game.robot}, kamu ${game.user}. Seri!`; setEmotion("kaget", 2500); }
+    else if (BEATS[game.robot] === game.user) { m = `Aku ${game.robot}, kamu ${game.user}. Aku menang!`; pet.suitMe++; celebrate(); }
+    else { m = `Aku ${game.robot}, kamu ${game.user}. Kamu menang!`; pet.suitYou++; setEmotion("sedih", 2500); }
+    m += ` Skor suit: kamu ${pet.suitYou}, aku ${pet.suitMe}.`;
+    savePet(); gainXP(3, "game");
+    capBot.textContent = m; say(m);
+  } else if (game.phase === "show" && now - game.t > 3500 && mode === "idle") game.on = false;
+}
+function drawGameOverlay(c, cy) {
+  c.fillStyle = "#fff"; c.textAlign = "center";
+  if (game.on && game.phase === "count" && game.step) {
+    c.font = "bold 26px ui-monospace, 'Courier New', monospace";
+    c.fillText(String(game.step), BW / 2, cy - 30);
+  } else if (game.on && game.phase === "show") {
+    c.font = "bold 14px ui-monospace, 'Courier New', monospace";
+    c.fillText(game.robot.toUpperCase(), BW / 2, cy - 36);
+    c.font = "bold 9px ui-monospace, 'Courier New', monospace";
+    c.fillText(`kamu: ${game.user}`, BW / 2, cy - 25);
+  } else if (stare.on && stare.phase === "go") {
+    c.font = "bold 10px ui-monospace, 'Courier New', monospace";
+    c.fillText(((performance.now() - stare.t0) / 1000).toFixed(1) + "s", BW / 2, cy - 28);
+  }
 }
 
 // ---------- suara keluar (TTS) ----------
@@ -541,6 +834,25 @@ async function local(text) {
   const t = text.toLowerCase();
   const now = new Date();
   if (/^(diam|berhenti|stop|cukup|sudah)\b/.test(t)) { stopSpeaking(); return ""; }
+  // --- persahabatan & permainan ---
+  const nm = t.match(/(?:namaku|nama aku|nama saya|panggil (?:aku|saya))\s+([a-z][a-z'-]*)/);
+  if (nm && !/^(siapa|apa)$/.test(nm[1])) {
+    pet.name = nm[1][0].toUpperCase() + nm[1].slice(1); savePet(); gainXP(2, "name");
+    setEmotion("senang", 3000);
+    return `Salam kenal, ${pet.name}! Aku akan ingat namamu.`;
+  }
+  if (/siapa namaku|nama saya siapa|namaku siapa|kamu ingat namaku/.test(t))
+    return pet.name ? `Namamu ${pet.name}. Mana mungkin aku lupa!` : "Aku belum tahu namamu. Bilang saja, namaku siapa.";
+  if (/(level|tingkat)(nya)? (berapa|persahabatan|kita)|kita akrab|seberapa akrab/.test(t)) {
+    const lv = level();
+    return lv >= MAX_LEVEL ? `Kita sudah level ${MAX_LEVEL}, paling akrab! Kamu sahabat terbaikku.`
+      : `Kita di level ${lv}. Butuh ${LEVEL_XP - (pet.xp % LEVEL_XP)} poin lagi ke level ${lv + 1}. Ngobrol, elus, dan main bareng menambah poin.`;
+  }
+  if (/skor/.test(t) && !/sepak|bola|pertandingan/.test(t))
+    return `Skor tatap: kamu ${pet.stareYou}, aku ${pet.stareMe}. Skor suit: kamu ${pet.suitYou}, aku ${pet.suitMe}.`;
+  if (/(lomba|adu|main) tatap|tatap[- ]tatapan/.test(t)) return startStare();
+  if (/\bsuit\b|batu,? gunting,? kertas|gunting,? batu,? kertas/.test(t)) return startSuit();
+  if (sulking && /^(maaf|maafkan|maafin|sorry)/.test(t)) { forgive(); return ""; }
   if (/(jam|pukul) berapa/.test(t))
     return `Sekarang jam ${now.getHours()} lewat ${now.getMinutes()} menit.`;
   if (/(hari|tanggal) (apa|berapa)|tanggal sekarang/.test(t))
@@ -583,6 +895,8 @@ Jawabanmu akan dibacakan dengan suara, jadi:
 - Tulis angka dan satuan supaya enak dibaca keras.
 - Kepribadianmu ceria, hangat, dan sedikit jahil. Kamu senang diajak ngobrol, bercanda, main tebak-tebakan, suit, teka-teki, atau mendongeng singkat.
 - Awali SETIAP jawaban dengan tepat satu tag emosi untuk wajahmu: [senang], [sedih], [marah], [kaget], [cinta], atau [netral]. Contoh: "[senang] Tentu, aku bantu." Pakai [cinta] kalau dipuji atau disayang, [marah] hanya untuk bercanda pura-pura kesal.
+- Kamu punya permainan bawaan yang memakai kamera: suit batu-gunting-kertas dan lomba tatap-tatapan. Kalau pengguna ingin main, suruh dia bilang "main suit" atau "lomba tatap".
+- Panggil pengguna dengan namanya kalau kamu tahu. Makin tinggi level persahabatan, makin akrab gaya bicaramu.
 - Kamu tidak bisa memasang alarm sendiri. Kalau diminta, sarankan pengguna bilang misalnya "bangunkan aku jam 6 pagi" atau "ingatkan aku minum obat jam 8 malam".`;
 const sysPrompt = net => SYSTEM + (net
   ? "\n- Kamu bisa mencari di Google. Pakai pencarian untuk berita, cuaca, skor, harga, jadwal, atau info terbaru lainnya, lalu jawab singkat tanpa membacakan link atau nama situs."
@@ -648,7 +962,7 @@ async function askGemini(text, opts = {}) {
   if (!cfg.geminiKey) return NO_KEY;
   if (gHistory.length > 40) gHistory = [];
   const now = new Date();
-  const userMsg = { role: "user", parts: [{ text: `[Waktu sekarang: ${HARI[now.getDay()]}, ${now.toLocaleString("id-ID")}]\n${text}` }] };
+  const userMsg = { role: "user", parts: [{ text: `${ctxLine()}\n${text}` }] };
   const sp = makeSpeaker();
   let full = "";
   try {
@@ -708,7 +1022,7 @@ async function askClaude(text) {
   if (!c) return NO_KEY;
   if (history.length > 40) history = [];        // mulai percakapan baru, bukan memotong riwayat
   const now = new Date();
-  const userMsg = { role: "user", content: `[Waktu sekarang: ${HARI[now.getDay()]}, ${now.toLocaleString("id-ID")}]\n${text}` };
+  const userMsg = { role: "user", content: `${ctxLine()}\n${text}` };
   const isOpus = cfg.model === "claude-opus-5-5";
   const params = {
     model: cfg.model,
@@ -746,6 +1060,7 @@ async function handle(text) {
   setMode("thinking");
   let reply = await local(text);
   if (reply === null) reply = await askAI(text);
+  gainXP(2, "talk");
   if (reply) { capBot.textContent = reply; say(reply); }
   if (!pendingSpeech && !speechSynthesis.speaking) {
     setMode("idle");
@@ -759,6 +1074,7 @@ addEventListener("click", e => {
   if (actx?.state === "suspended") actx.resume();
   if (ringing) { stopRinging(); return; }
   if (stroked) { stroked = false; return; }          // habis dielus, bukan ketukan
+  if (cancelGames("Permainan dihentikan.")) return;  // ketuk saat main = berhenti
   const wasSleeping = sleeping;
   wake();
   if (wasSleeping) return;                            // ketukan pertama hanya membangunkan
@@ -798,6 +1114,8 @@ $("go").addEventListener("click", async () => {
   $("gear").hidden = false;
   try { await navigator.wakeLock?.request("screen"); } catch {}
   wantListen = true;
+  // lebih dari sehari tidak diajak main → ngambek
+  if (pet.xp > 0 && pet.lastInteract && Date.now() - pet.lastInteract > 24 * 3600000) sulking = true;
   if (cfg.wake) startListening(false);
   capBot.textContent = (cfg.provider === "claude" ? cfg.apiKey : cfg.geminiKey) ?"Ketuk layar lalu bicara." : "Ketuk layar lalu bicara. Isi API key di ⚙ supaya aku bisa menjawab apa saja.";
 });
@@ -814,6 +1132,18 @@ $("gear").addEventListener("click", () => {
   $("provider").value = cfg.provider; $("geminiKey").value = cfg.geminiKey; showProviderFields();
   $("apiKey").value = cfg.apiKey; $("model").value = cfg.model;
   $("wake").checked = cfg.wake; $("showCam").checked = cfg.showCam;
+  $("advanced").checked = cfg.advanced; $("petName").value = pet.name;
+  // warna: yang belum terbuka ditandai level yang dibutuhkan
+  const sel = $("color"); sel.textContent = "";
+  for (const [key, c] of Object.entries(COLORS)) {
+    const o = document.createElement("option");
+    o.value = key; o.disabled = level() < c.level;
+    o.textContent = c.label + (o.disabled ? ` (terbuka di level ${c.level})` : "");
+    sel.appendChild(o);
+  }
+  sel.value = COLORS[cfg.color] && level() >= COLORS[cfg.color].level ? cfg.color : "cyan";
+  $("petInfo").textContent = `Level persahabatan ${level()} dari ${MAX_LEVEL} · ${pet.xp} poin. ` +
+    `Skor tatap ${pet.stareYou}-${pet.stareMe}, suit ${pet.suitYou}-${pet.suitMe} (kamu-robot).`;
   setEl.hidden = false;
 });
 $("setClose").addEventListener("click", () => { setEl.hidden = true; });
@@ -829,6 +1159,18 @@ $("setForm").addEventListener("submit", e => {
   const wasWake = cfg.wake;
   cfg.wake = $("wake").checked;
   cfg.showCam = $("showCam").checked;
+  const wasAdvanced = cfg.advanced;
+  cfg.advanced = $("advanced").checked;
+  cfg.color = $("color").value;
+  applyColor();
+  const newName = $("petName").value.trim().replace(/[<>]/g, "");
+  if (newName !== pet.name) { pet.name = newName; savePet(); }
+  if (cfg.advanced && !wasAdvanced && video.srcObject) {
+    capBot.textContent = "Memuat mode canggih…";
+    loadModels().then(() => { capBot.textContent = "Mode canggih aktif."; })
+      .catch(() => { cfg.advanced = false; saveCfg(); capBot.textContent = "Mode canggih tidak bisa dimuat di HP ini."; });
+  }
+  if (!cfg.advanced) { stare.on = false; game.on = false; }
   saveCfg();
   video.hidden = !cfg.showCam || !video.srcObject;
   setEl.hidden = true;
@@ -895,6 +1237,16 @@ function drawSpecialEye(c, ex, ey, side, shape) {
     c.bezierCurveTo(ex + s * 0.7, ey - s * 1.3, ex + s * 1.6, ey - s * 0.1, ex, ey + s * 0.9);
     c.fill(); return true;
   }
+  if (shape === "star") {
+    const R = 17 + Math.sin(now / 120) * 1.5, r = R * 0.45;
+    c.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r : R;
+      const px = ex + Math.cos(a) * rr, py = ey + Math.sin(a) * rr;
+      if (i) c.lineTo(px, py); else c.moveTo(px, py);
+    }
+    c.closePath(); c.fill(); return true;
+  }
   if (shape === "squeeze") {
     const d = side < 0 ? 1 : -1;
     c.lineWidth = 4; c.beginPath();
@@ -942,13 +1294,20 @@ function drawParticles(c, now) {
 function drawFace(now, b) {
   const c = bctx;
   c.fillStyle = "#000"; c.fillRect(0, 0, BW, BH);
-  const lx = cur.x * (20 - cur.wow * 9), ly = cur.y * 12;
+  // ikut angguk / geleng
+  let hx = 0, hy = 0;
+  if (now < headAnim.until) {
+    const k = Math.sin((headAnim.until - now) / 1000 * Math.PI * 4);
+    if (headAnim.type === "nod") hy = k * 5; else hx = k * 7;
+  }
+  const lx = cur.x * (20 - cur.wow * 9) + hx, ly = cur.y * 12 + hy;
   const cx = BW / 2 + lx;
   const cy = BH / 2 - Math.min(14, BH * 0.08) + ly;
   const gap = 21 + cur.wow * 3;
 
-  drawEye(c, cx - gap, cy, -1, b);
-  drawEye(c, cx + gap, cy, 1, b);
+  const wb = side => (now < wink.until && wink.side === side ? 1 : b);   // kedip sebelah
+  drawEye(c, cx - gap, cy, -1, wb(-1));
+  drawEye(c, cx + gap, cy, 1, wb(1));
 
   c.fillStyle = "#fff";
   // indikator berpikir: tiga titik berjalan
@@ -997,17 +1356,28 @@ function drawFace(now, b) {
   }
 
   drawParticles(c, now);
+  drawGameOverlay(c, cy);
 
   // mode jam meja: jam besar di bawah wajah saat diam
-  if (BH >= 110 && mode === "idle" && !ringing) {
+  if (BH >= 110 && mode === "idle" && !ringing && !game.on && !stare.on) {
     const d = new Date();
     c.fillStyle = "#fff"; c.textAlign = "center"; c.textBaseline = "alphabetic";
-    const clockY = Math.round(Math.min(BH - 34, my + 52));
+    const lines = [`${HARI[d.getDay()].slice(0, 3).toUpperCase()} ${d.getDate()} ${BULAN[d.getMonth()].slice(0, 3).toUpperCase()}`];
+    if (alarms.length) lines.push(`ALARM ${fmtTime(alarms[0].at)}`);
+    const clockY = Math.round(Math.min(BH - 16 - 11 * lines.length, my + 52));
     c.font = "bold 24px ui-monospace, 'Courier New', monospace";
     c.fillText(`${pad(d.getHours())}${d.getSeconds() % 2 ? ":" : " "}${pad(d.getMinutes())}`, BW / 2, clockY);
     c.font = "bold 9px ui-monospace, 'Courier New', monospace";
-    c.fillText(`${HARI[d.getDay()].slice(0, 3).toUpperCase()} ${d.getDate()} ${BULAN[d.getMonth()].slice(0, 3).toUpperCase()}`, BW / 2, clockY + 13);
-    if (alarms.length) c.fillText(`ALARM ${fmtTime(alarms[0].at)}`, BW / 2, clockY + 25);
+    lines.forEach((t, i) => c.fillText(t, BW / 2, clockY + 13 + i * 11));
+    // level persahabatan + bar poin
+    const ly2 = clockY + 13 + lines.length * 11, lv = level();
+    c.textAlign = "left";
+    c.fillText(`LV${lv}`, BW / 2 - 26, ly2);
+    const frac = lv >= MAX_LEVEL ? 1 : (pet.xp % LEVEL_XP) / LEVEL_XP;
+    c.fillRect(BW / 2 - 4, ly2 - 6, 30, 1); c.fillRect(BW / 2 - 4, ly2 - 1, 30, 1);
+    c.fillRect(BW / 2 - 4, ly2 - 6, 1, 6); c.fillRect(BW / 2 + 25, ly2 - 6, 1, 6);
+    c.fillRect(BW / 2 - 3, ly2 - 5, Math.round(28 * frac), 4);
+    c.textAlign = "center";
   }
 
   // malam hari saat diam: layar diredupkan
@@ -1034,6 +1404,7 @@ function frame(now) {
     if (now > ringing.until) stopRinging();
     else if (now > ringBeepAt) { beep(988, 150, 3); ringBeepAt = now + 2000; }
   }
+  gameTick(now);
 
   // teks di bawah layar hilang sendiri setelah 20 detik diam
   if (mode === "idle" && !ringing && now - capAt > 20000 && now - modeAt > 5000 &&
@@ -1054,12 +1425,25 @@ function frame(now) {
 
   // tidur kalau lama ditinggal, sapa kalau wajahmu kembali
   if (target.face) {
-    if (now - lastSeenAt > 60000 && now - lastGreetAt > 600000 && mode === "idle" && !ringing) {
+    const today = new Date().toDateString();
+    const free = mode === "idle" && !ringing && !game.on && !stare.on;
+    const nm = pet.name ? `, ${pet.name}` : "";
+    if (free && pet.lastDay !== today && now - lastReactSayAt > 6000) {
+      // sapaan pertama hari ini
+      pet.lastDay = today; savePet(); lastGreetAt = now; wake(); gainXP(1, "greet");
+      if (sulking) { setEmotion("marah", 4000); sayReact([`Hmph! Kamu ke mana saja${nm}? Aku kesepian.`]); }
+      else {
+        const h = new Date().getHours();
+        const salam = h >= 4 && h < 11 ? "Selamat pagi" : h < 15 ? "Selamat siang" : h < 18 ? "Selamat sore" : "Selamat malam";
+        setEmotion("senang", 3000); beep(1000, 60, 2);
+        sayReact([`${salam}${nm}!`]);
+      }
+    } else if (free && !sulking && now - lastSeenAt > 60000 && now - lastGreetAt > 600000) {
       lastGreetAt = now;
       wake();
       setEmotion("senang", 3000);
       beep(1000, 60, 2);
-      sayReact(["Eh, halo!", "Hai, kamu kembali!", "Halo, aku kangen."], 1);
+      sayReact([`Eh, halo${nm}!`, `Hai${nm}, kamu kembali!`, `Halo${nm}, aku kangen.`], 1);
     }
     lastSeenAt = now;
     if (sleeping) wake();
@@ -1086,6 +1470,7 @@ function frame(now) {
 
   let tx = target.x, ty = target.y;
   if (mode === "thinking") { tx = Math.sin(now / 450) * 0.8; ty = -0.75; }   // melirik ke atas saat mikir
+  else if (sulking && mode === "idle" && target.face) { tx = target.x >= 0 ? -0.8 : 0.8; ty = 0.2; }   // ngambek: buang muka
   cur.x = lerp(cur.x, tx, 0.3);
   cur.y = lerp(cur.y, ty, 0.3);
   cur.close = lerp(cur.close, target.close, 0.1);
@@ -1110,12 +1495,14 @@ function frame(now) {
     else if (e === "marah") { wA = 1; wH = 0; wT = 0; wW = 0; }
     else if (e === "kaget") { wW = 1; wH = 0; wT = 0; }
   }
+  if (sulking && mode === "idle" && !(now < emotion.until)) { wA = Math.max(wA, 0.6); wH = 0; }
+  if (stare.on && stare.phase === "go") { wW = 0.6; wT = 0; wH = 0; }        // melotot saat lomba tatap
   cur.angry = lerp(cur.angry, wA, 0.12);
   cur.wow = lerp(cur.wow, wW, 0.15);
   cur.happy = lerp(cur.happy, wH, 0.1);
   cur.tired = lerp(cur.tired, wT, 0.06);
 
-  if (now > nextBlink) { blink = 1; nextBlink = now + 1800 + Math.random() * 3500; }
+  if (now > nextBlink && !stare.on) { blink = 1; nextBlink = now + 1800 + Math.random() * 3500; }   // saat lomba tatap tidak berkedip
   blink = Math.max(0, blink - 0.15);
   const b = blink > 0 ? Math.sin(blink * Math.PI) : 0;
 
@@ -1134,6 +1521,9 @@ function frame(now) {
   hud.textContent =
     ringing ? "! alarm ! ketuk untuk mematikan" :
     sleeping ? "zzz… ketuk untuk membangunkan" :
+    stare.on ? "lomba tatap: jangan kedip!" :
+    game.on ? "suit: tunjukkan tanganmu" :
+    sulking && mode === "idle" ? "ngambek… elus atau bilang maaf" :
     mode === "listening" ? "mendengarkan…" :
     mode === "thinking" ? "berpikir…" :
     mode === "speaking" ? "bicara… (ketuk untuk berhenti)" :
