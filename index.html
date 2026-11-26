@@ -21,7 +21,10 @@
     --panel: #061214;
   }
   * { box-sizing: border-box; }
-  [hidden] { display: none !important; }   /* supaya panel benar-benar tersembunyi walau punya display:grid */
+  [hidden] { display: none !important; }
+  /* tampilan polos gaya Arduino: hanya wajah OLED, tanpa teks & kamera kecil */
+  body.plain #hud, body.plain #caption, body.plain video { display: none !important; }
+  body.plain #gear { opacity: .25; border-color: transparent; }   /* supaya panel benar-benar tersembunyi walau punya display:grid */
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
     font-family: ui-monospace, "Courier New", monospace; overflow: hidden;
     -webkit-tap-highlight-color: transparent; touch-action: none; }
@@ -108,6 +111,7 @@
     </div>
     <p class="note">Key disimpan hanya di browser HP ini. Siapa pun yang memegang HP ini bisa memakainya. Tanpa key, hanya perintah bawaan yang jalan (jam, tanggal, timer, cuaca).</p>
     <label class="row"><input type="checkbox" id="wake"> Selalu dengar, panggil "Halo robot"</label>
+    <label class="row"><input type="checkbox" id="plain"> Tampilan polos gaya Arduino (hanya wajah, tanpa jam & teks)</label>
     <label class="row"><input type="checkbox" id="showCam"> Tampilkan kamera kecil</label>
     <label class="row"><input type="checkbox" id="advanced"> Mode canggih: baca ekspresi wajah & tangan</label>
     <p class="note">Dibutuhkan untuk meniru ekspresi, lomba tatap, suit, dan gestur tangan. Lebih berat: HP cepat panas dan boros baterai.</p>
@@ -167,8 +171,10 @@ const video = $("cam"), hud = $("hud"), errEl = $("err");
 const capYou = $("capYou"), capBot = $("capBot");
 
 // ---------- pengaturan (localStorage, aman bila diblokir) ----------
-const cfg = { provider: "gemini", geminiKey: "", geminiModel: "", apiKey: "", model: "claude-opus-5-5", wake: false, showCam: true, advanced: true, color: "cyan" };
+const cfg = { provider: "gemini", geminiKey: "", geminiModel: "", apiKey: "", model: "claude-opus-5-5", wake: false, showCam: true, advanced: true, color: "cyan", plain: true };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem("mataCfg") || "{}")); } catch {}
+const applyPlain = () => document.body.classList.toggle("plain", !!cfg.plain);
+applyPlain();
 
 // ---------- persahabatan (seperti hewan peliharaan) ----------
 const pet = { name: "", xp: 0, lastDay: "", lastInteract: 0, stareMe: 0, stareYou: 0, suitMe: 0, suitYou: 0 };
@@ -1133,7 +1139,7 @@ $("gear").addEventListener("click", () => {
   $("provider").value = cfg.provider; $("geminiKey").value = cfg.geminiKey; showProviderFields();
   $("apiKey").value = cfg.apiKey; $("model").value = cfg.model;
   $("wake").checked = cfg.wake; $("showCam").checked = cfg.showCam;
-  $("advanced").checked = cfg.advanced; $("petName").value = pet.name;
+  $("advanced").checked = cfg.advanced; $("petName").value = pet.name; $("plain").checked = cfg.plain;
   // warna: yang belum terbuka ditandai level yang dibutuhkan
   const sel = $("color"); sel.textContent = "";
   for (const [key, c] of Object.entries(COLORS)) {
@@ -1160,6 +1166,7 @@ $("setForm").addEventListener("submit", e => {
   const wasWake = cfg.wake;
   cfg.wake = $("wake").checked;
   cfg.showCam = $("showCam").checked;
+  cfg.plain = $("plain").checked; applyPlain();
   const wasAdvanced = cfg.advanced;
   cfg.advanced = $("advanced").checked;
   cfg.color = $("color").value;
@@ -1360,7 +1367,7 @@ function drawFace(now, b) {
   drawGameOverlay(c, cy);
 
   // mode jam meja: jam besar di bawah wajah saat diam
-  if (BH >= 110 && mode === "idle" && !ringing && !game.on && !stare.on) {
+  if (!cfg.plain && BH >= 110 && mode === "idle" && !ringing && !game.on && !stare.on) {
     const d = new Date();
     c.fillStyle = "#fff"; c.textAlign = "center"; c.textBaseline = "alphabetic";
     const lines = [`${HARI[d.getDay()].slice(0, 3).toUpperCase()} ${d.getDate()} ${BULAN[d.getMonth()].slice(0, 3).toUpperCase()}`];
