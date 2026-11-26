@@ -70,7 +70,7 @@
 <div id="start">
   <div class="box">
     <h1>MATA PENJAGA</h1>
-    <p>Asisten suara dengan mata robot. Ketuk layar lalu bicara, atau aktifkan "selalu dengar" dan panggil <b>"Halo robot"</b>.</p>
+    <p>Asisten suara dengan mata robot. Ketuk layar lalu bicara, atau aktifkan "selalu dengar" dan panggil <b>"Halo robot"</b>. Coba juga elus layarnya, colek dua kali, atau goyang HP-nya.</p>
     <button class="main" id="go">MULAI</button>
     <div style="margin-top:14px"><button class="main" id="install" hidden>INSTAL APLIKASI</button></div>
     <p class="note" id="iosHint" hidden style="margin-top:14px">Untuk memasang di iPhone: ketuk tombol Bagikan lalu "Tambah ke Layar Utama".</p>
@@ -183,12 +183,44 @@ addEventListener("resize", resize); resize();
 
 // ---------- state wajah ----------
 const target = { x: 0, y: 0, close: 0.3, face: false };
-const cur = { x: 0, y: 0, close: 0.3, happy: 0, tired: 0.6, wow: 0 };
+const cur = { x: 0, y: 0, close: 0.3, happy: 0, tired: 0.6, wow: 0, angry: 0 };
 let lastFaceAt = 0;
 let blink = 0, nextBlink = performance.now() + 2000;
 let idleT = 0, idleTarget = { x: 0, y: 0 };
 let mode = "idle";          // idle | listening | thinking | speaking
 let alarmUntil = 0;
+
+// ---------- interaksi: reaksi, emosi, partikel ----------
+let react = { shape: null, until: 0 };          // bentuk mata khusus sementara
+let emotion = { name: "", until: 0 };            // emosi wajah (dari gestur atau jawaban AI)
+const particles = [];                            // hati / zzz yang melayang
+let sleeping = false, lastSeenAt = performance.now(), lastInteractAt = performance.now();
+let lastGreetAt = 0, lastReactSayAt = 0, lastZAt = 0;
+
+function setReact(shape, ms) { react = { shape, until: performance.now() + ms }; }
+function setEmotion(name, ms = 4000) {
+  const now = performance.now();
+  if (name === "cinta") { setReact("heart", ms); addParticles("heart", 4); emotion = { name: "senang", until: now + ms }; }
+  else if (["senang", "sedih", "marah", "kaget"].includes(name)) emotion = { name, until: now + ms };
+}
+function wake() {
+  lastInteractAt = performance.now();
+  if (sleeping) { sleeping = false; alarmUntil = performance.now() + 800; }   // bangun kaget sebentar
+}
+// ucapkan kalimat reaksi (dibatasi supaya tidak cerewet)
+function sayReact(lines, chance = 1) {
+  const now = performance.now();
+  if (mode !== "idle" || ringing || now - lastReactSayAt < 6000 || Math.random() > chance) return;
+  lastReactSayAt = now;
+  const t = lines[Math.floor(Math.random() * lines.length)];
+  capYou.textContent = ""; capBot.textContent = t; say(t);
+}
+function addParticles(kind, n) {
+  for (let i = 0; i < n; i++) particles.push({
+    kind, x: BW / 2 + (Math.random() * 2 - 1) * 40, y: BH / 2 - 10 + Math.random() * 10,
+    vx: (Math.random() * 2 - 1) * 0.2, vy: -(0.3 + Math.random() * 0.4), life: 1, size: 8 + Math.random() * 6,
+  });
+}
 
 const lerp = (a, b, t) => a + (b - a) * t;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -200,6 +232,60 @@ addEventListener("pointermove", e => {
   target.y = clamp((e.clientY / innerHeight - 0.5) * 2, -1, 1);
   touchAt = performance.now();
 });
+
+// ---------- gestur: elus (usap bolak-balik) ----------
+let pDown = false, lastPX = null, lastDir = 0, strokeLen = 0, reversals = 0, stroked = false, lastPetAt = 0;
+const onUI = e => e.target.closest && e.target.closest("#start, #settings, #gear");
+addEventListener("pointerdown", e => { if (onUI(e)) return; pDown = true; lastPX = e.clientX; lastDir = 0; strokeLen = 0; reversals = 0; });
+addEventListener("pointerup", () => { pDown = false; });
+addEventListener("pointercancel", () => { pDown = false; });
+addEventListener("pointermove", e => {
+  if (!pDown || lastPX === null) return;
+  const dx = e.clientX - lastPX; lastPX = e.clientX;
+  strokeLen += Math.abs(dx);
+  const dir = Math.abs(dx) > 1 ? Math.sign(dx) : 0;
+  if (dir && lastDir && dir !== lastDir) reversals++;
+  if (dir) lastDir = dir;
+  if (strokeLen > 200 && reversals >= 2) { strokeLen = 0; reversals = 0; stroked = true; onPet(); }
+});
+function onPet() {
+  const now = performance.now();
+  wake();
+  setEmotion("senang", 2500);
+  addParticles("heart", 3);
+  if (now - lastPetAt > 1200) beep(660, 60, 2);
+  lastPetAt = now;
+  sayReact(["Hehe, enak dielus.", "Aku suka itu.", "Geli, hihi.", "Lagi dong."], 0.35);
+}
+function onTickle() {
+  wake();
+  setReact("squeeze", 1200);
+  beep(1400, 40, 3);
+  sayReact(["Aduh, geli!", "Hihi, jangan colek-colek!", "Eh, kaget aku."], 0.6);
+}
+
+// ---------- gestur: goyang & miringkan HP ----------
+let shakeHits = [], tilt = null;
+addEventListener("devicemotion", e => {
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x == null) return;
+  const now = performance.now();
+  if (Math.abs(Math.hypot(a.x, a.y, a.z) - 9.8) > 14) {
+    shakeHits.push(now);
+    shakeHits = shakeHits.filter(t => now - t < 900);
+    if (shakeHits.length >= 4 && !(now < react.until && react.shape === "dizzy")) onShake();
+  }
+});
+addEventListener("deviceorientation", e => {
+  if (e.gamma == null) return;
+  tilt = { x: clamp(e.gamma / 35, -1, 1), y: clamp(((e.beta ?? 55) - 55) / 35, -1, 1), at: performance.now() };
+});
+function onShake() {
+  shakeHits = [];
+  wake();
+  setReact("dizzy", 3000);
+  sayReact(["Waaa, pusing!", "Berhenti, aku mual!", "Dunia berputar…"], 1);
+}
 
 // ---------- kamera + deteksi wajah ----------
 let detector = null, lastVideoTime = -1;
@@ -246,7 +332,7 @@ if ("speechSynthesis" in window) { pickVoice(); speechSynthesis.onvoiceschanged 
 
 let pendingSpeech = 0;
 function say(text) {
-  text = text.replace(/[*_#`>]/g, "").trim();
+  text = text.replace(/\[\w+\]/g, "").replace(/[*_#`>]/g, "").trim();
   if (!text || !("speechSynthesis" in window)) return;
   stopListening();
   setMode("speaking");
@@ -319,7 +405,11 @@ function startListening(command) {
 function stopListening() { awaitingCommand = false; if (rec && recActive) { try { rec.abort(); } catch {} } }
 
 let modeAt = performance.now(), capAt = performance.now();
-function setMode(m) { if (m !== mode) modeAt = performance.now(); mode = m; }
+function setMode(m) {
+  if (m !== mode) modeAt = performance.now();
+  mode = m;
+  if (m !== "idle") wake();
+}
 new MutationObserver(() => { capAt = performance.now(); })
   .observe(capBot, { childList: true, characterData: true, subtree: true });
 
@@ -491,6 +581,8 @@ Jawabanmu akan dibacakan dengan suara, jadi:
 - Singkat: 1 sampai 3 kalimat, kecuali pengguna minta penjelasan panjang.
 - Teks biasa saja. Jangan pakai markdown, daftar berpoin, emoji, atau simbol.
 - Tulis angka dan satuan supaya enak dibaca keras.
+- Kepribadianmu ceria, hangat, dan sedikit jahil. Kamu senang diajak ngobrol, bercanda, main tebak-tebakan, suit, teka-teki, atau mendongeng singkat.
+- Awali SETIAP jawaban dengan tepat satu tag emosi untuk wajahmu: [senang], [sedih], [marah], [kaget], [cinta], atau [netral]. Contoh: "[senang] Tentu, aku bantu." Pakai [cinta] kalau dipuji atau disayang, [marah] hanya untuk bercanda pura-pura kesal.
 - Kamu tidak bisa memasang alarm sendiri. Kalau diminta, sarankan pengguna bilang misalnya "bangunkan aku jam 6 pagi" atau "ingatkan aku minum obat jam 8 malam".`;
 const sysPrompt = net => SYSTEM + (net
   ? "\n- Kamu bisa mencari di Google. Pakai pencarian untuk berita, cuaca, skor, harga, jadwal, atau info terbaru lainnya, lalu jawab singkat tanpa membacakan link atau nama situs."
@@ -507,9 +599,25 @@ function makeSpeaker() {
       if (all) break;
     }
   };
+  // tag emosi di awal jawaban, misalnya "[senang]", dipakai untuk wajah lalu dibuang
+  const TAG = /\[(senang|sedih|marah|kaget|cinta|netral)\]\s*/gi;
+  let head = "", headDone = false;
+  const push = txt => {
+    txt = txt.replace(TAG, "");
+    if (!txt) return;
+    pending += txt; shown += txt; capBot.textContent = shown; flush(false);
+  };
   return {
-    feed(delta) { pending += delta; shown += delta; capBot.textContent = shown; flush(false); },
-    end() { flush(true); },
+    feed(delta) {
+      if (headDone) return push(delta);
+      head += delta;
+      const m = head.match(/^\s*\[(\w+)\]\s*/);
+      if (m) setEmotion(m[1].toLowerCase());
+      else if (head.length < 14 && /^\s*\[?\w*$/.test(head)) return;   // tunggu tag lengkap
+      headDone = true;
+      push(head);
+    },
+    end() { if (!headDone) { headDone = true; push(head); } flush(true); },
   };
 }
 
@@ -650,17 +758,32 @@ addEventListener("click", e => {
   if (e.target.closest("#start, #settings, #gear")) return;
   if (actx?.state === "suspended") actx.resume();
   if (ringing) { stopRinging(); return; }
+  if (stroked) { stroked = false; return; }          // habis dielus, bukan ketukan
+  const wasSleeping = sleeping;
+  wake();
+  if (wasSleeping) return;                            // ketukan pertama hanya membangunkan
   if (mode === "speaking") { stopSpeaking(); setMode("idle"); return; }
   if (mode === "listening") { stopListening(); return; }
   if (mode === "thinking") return;
-  if (!SR) { capBot.textContent = "Browser ini tidak bisa mendengar suara. Pakai Chrome di Android."; return; }
-  stopListening();
-  setTimeout(() => startListening(true), 150);
+  // colek dua kali cepat = geli; sekali = bicara
+  if (tapTimer) { clearTimeout(tapTimer); tapTimer = null; onTickle(); return; }
+  tapTimer = setTimeout(() => {
+    tapTimer = null;
+    if (mode !== "idle") return;
+    if (!SR) { capBot.textContent = "Browser ini tidak bisa mendengar suara. Pakai Chrome di Android."; return; }
+    stopListening();
+    setTimeout(() => startListening(true), 150);
+  }, 280);
 });
+let tapTimer = null;
 
 $("go").addEventListener("click", async () => {
   errEl.textContent = "Memuat…";
+  // iPhone butuh izin sensor gerak (untuk deteksi goyang)
+  const motionPerm = typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function"
+    ? DeviceMotionEvent.requestPermission().catch(() => {}) : null;
   try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+  await motionPerm;
   // buka kunci suara (iOS butuh gesture)
   try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); } catch {}
   try { await startCamera(); }
@@ -732,6 +855,8 @@ function drawEye(c, ex, ey, side, b) {
   const w = 32 * grow * persp;
   const h = Math.max(2, 32 * grow * persp * (1 - b));
   const x = ex - w / 2, y = ey - h / 2;
+  const shape = sleeping ? "sleep" : performance.now() < react.until ? react.shape : null;
+  if (shape && drawSpecialEye(c, ex, ey, side, shape)) return;
   c.fillStyle = "#fff";
   rrect(c, x, y, w, h, 7); c.fill();
   c.fillStyle = "#000";
@@ -743,9 +868,74 @@ function drawEye(c, ex, ey, side, b) {
     else { c.lineTo(x + w + 2, outer); c.lineTo(x - 2, inner); }
     c.closePath(); c.fill();
   }
+  // marah: kelopak miring, sisi dalam lebih turun
+  if (cur.angry > 0.02 && h > 4) {
+    const inner = y + h * 0.55 * cur.angry, outer = y + h * 0.05 * cur.angry;
+    c.beginPath();
+    c.moveTo(x - 2, y - 2); c.lineTo(x + w + 2, y - 2);
+    if (side < 0) { c.lineTo(x + w + 2, inner); c.lineTo(x - 2, outer); }
+    else { c.lineTo(x + w + 2, outer); c.lineTo(x - 2, inner); }
+    c.closePath(); c.fill();
+  }
   if (cur.happy > 0.02 && h > 4) {
     const cy = y + h + h * 0.5 * (1 - cur.happy) + h * 0.05;
     c.beginPath(); c.ellipse(ex, cy, w * 0.75, h * 0.55, 0, 0, Math.PI * 2); c.fill();
+  }
+}
+
+// bentuk mata khusus: hati, > <, spiral pusing, terpejam tidur
+function drawSpecialEye(c, ex, ey, side, shape) {
+  const now = performance.now();
+  c.fillStyle = "#fff"; c.strokeStyle = "#fff"; c.lineCap = "round"; c.lineJoin = "round";
+  if (shape === "heart") {
+    const s = 15 + Math.sin(now / 150) * 1.5;      // berdenyut
+    c.beginPath();
+    c.moveTo(ex, ey + s * 0.9);
+    c.bezierCurveTo(ex - s * 1.6, ey - s * 0.1, ex - s * 0.7, ey - s * 1.3, ex, ey - s * 0.45);
+    c.bezierCurveTo(ex + s * 0.7, ey - s * 1.3, ex + s * 1.6, ey - s * 0.1, ex, ey + s * 0.9);
+    c.fill(); return true;
+  }
+  if (shape === "squeeze") {
+    const d = side < 0 ? 1 : -1;
+    c.lineWidth = 4; c.beginPath();
+    c.moveTo(ex - 9 * d, ey - 9); c.lineTo(ex + 9 * d, ey); c.lineTo(ex - 9 * d, ey + 9);
+    c.stroke(); return true;
+  }
+  if (shape === "dizzy") {
+    c.lineWidth = 2.5; c.beginPath();
+    const rot = now / 120 * (side < 0 ? 1 : -1);
+    for (let i = 0; i <= 60; i++) {
+      const a = i / 60 * Math.PI * 5 + rot, r = 1 + i / 60 * 15;
+      const px = ex + Math.cos(a) * r, py = ey + Math.sin(a) * r;
+      if (i) c.lineTo(px, py); else c.moveTo(px, py);
+    }
+    c.stroke(); return true;
+  }
+  if (shape === "sleep") {
+    c.lineWidth = 3; c.beginPath();
+    c.moveTo(ex - 13, ey + 2); c.quadraticCurveTo(ex, ey + 9, ex + 13, ey + 2);
+    c.stroke(); return true;
+  }
+  return false;
+}
+
+function drawParticles(c, now) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.life -= 0.008;
+    if (p.life <= 0 || p.y < 0) { particles.splice(i, 1); continue; }
+    if (p.life < 0.25 && Math.floor(now / 80) % 2) continue;    // berkedip sebelum hilang
+    c.fillStyle = "#fff";
+    if (p.kind === "heart") {
+      const s = 4;
+      c.beginPath(); c.moveTo(p.x, p.y + s);
+      c.bezierCurveTo(p.x - s * 1.6, p.y, p.x - s * 0.6, p.y - s * 1.2, p.x, p.y - s * 0.4);
+      c.bezierCurveTo(p.x + s * 0.6, p.y - s * 1.2, p.x + s * 1.6, p.y, p.x, p.y + s);
+      c.fill();
+    } else {
+      c.font = `bold ${Math.round(p.size)}px ui-monospace, 'Courier New', monospace`;
+      c.textAlign = "center"; c.fillText("z", p.x, p.y);
+    }
   }
 }
 
@@ -787,6 +977,16 @@ function drawFace(now, b) {
     rrect(c, mx - 3, my - 1, 7, 7, 3); c.stroke();
   } else if (mode === "thinking") {
     c.fillRect(Math.round(mx - 4 + Math.sin(now / 300) * 3), Math.round(my + 1), 8, 2);
+  } else if (sleeping) {
+    rrect(c, mx - 2, my, 5, 4, 2); c.stroke();          // mulut kecil "o" saat tidur
+  } else if (now < emotion.until && emotion.name === "sedih") {
+    c.beginPath(); c.arc(mx, my + 8, 8, Math.PI * 1.2, Math.PI * 1.8); c.stroke();
+  } else if (now < emotion.until && emotion.name === "marah") {
+    c.beginPath(); c.moveTo(mx - 7, my + 2); c.lineTo(mx - 3, my); c.lineTo(mx + 1, my + 2); c.lineTo(mx + 5, my); c.stroke();
+  } else if (performance.now() < react.until && react.shape === "dizzy") {
+    c.beginPath();
+    for (let i = 0; i <= 14; i++) { const px = mx - 7 + i, py = my + 1 + Math.sin(i * 0.9 + now / 90) * 2; if (i) c.lineTo(px, py); else c.moveTo(px, py); }
+    c.stroke();
   } else if (cur.wow > 0.5) {
     rrect(c, mx - 5, my - 2, 10, 11, 4); c.stroke();
   } else if (cur.happy > 0.45) {
@@ -795,6 +995,8 @@ function drawFace(now, b) {
     const wob = cur.tired > 0.5 ? Math.round(Math.sin(now / 400)) : 0;
     c.fillRect(Math.round(mx - 6), Math.round(my + wob), 12, 2);
   }
+
+  drawParticles(c, now);
 
   // mode jam meja: jam besar di bawah wajah saat diam
   if (BH >= 110 && mode === "idle" && !ringing) {
@@ -843,7 +1045,37 @@ function frame(now) {
       idleT = now + 700 + Math.random() * 2200;
     }
     target.x = idleTarget.x; target.y = idleTarget.y;
+    // HP dimiringkan → mata "jatuh" ke arah miring
+    if (tilt && now - tilt.at < 1000 && (Math.abs(tilt.x) > 0.25 || Math.abs(tilt.y) > 0.35)) {
+      target.x = tilt.x; target.y = tilt.y;
+    }
     target.close = lerp(target.close, 0.1, 0.02);
+  }
+
+  // tidur kalau lama ditinggal, sapa kalau wajahmu kembali
+  if (target.face) {
+    if (now - lastSeenAt > 60000 && now - lastGreetAt > 600000 && mode === "idle" && !ringing) {
+      lastGreetAt = now;
+      wake();
+      setEmotion("senang", 3000);
+      beep(1000, 60, 2);
+      sayReact(["Eh, halo!", "Hai, kamu kembali!", "Halo, aku kangen."], 1);
+    }
+    lastSeenAt = now;
+    if (sleeping) wake();
+  } else if (!sleeping && mode === "idle" && !ringing &&
+             now - lastSeenAt > 90000 && now - touchAt > 90000 && now - lastInteractAt > 90000) {
+    sleeping = true;
+  }
+  if (ringing && sleeping) wake();
+  if (sleeping && now - lastZAt > 1400) {
+    lastZAt = now;
+    particles.push({ kind: "z", x: BW / 2 + 28, y: BH / 2 - 34, vx: 0.15, vy: -0.25, life: 1, size: 8 + Math.random() * 6 });
+  }
+  // emosi & bentuk mata bertahan selama robot masih bicara
+  if (mode === "speaking") {
+    if (now < emotion.until) emotion.until = Math.max(emotion.until, now + 1500);
+    if (now < react.until && react.shape === "heart") react.until = Math.max(react.until, now + 1500);
   }
 
   // selesai bicara → kembali diam
@@ -870,6 +1102,15 @@ function frame(now) {
     wT = !f ? 0.7 : c < 0.15 ? 0.5 : 0;
     if (isNight() && !(f && c > 0.4)) { wT = Math.max(wT, 0.8); wH = 0; }   // malam: mengantuk
   }
+  let wA = 0;
+  if (now < emotion.until && !alarm) {
+    const e = emotion.name;
+    if (e === "senang") { wH = 1; wT = 0; wW = 0; }
+    else if (e === "sedih") { wT = 0.8; wH = 0; wW = 0; }
+    else if (e === "marah") { wA = 1; wH = 0; wT = 0; wW = 0; }
+    else if (e === "kaget") { wW = 1; wH = 0; wT = 0; }
+  }
+  cur.angry = lerp(cur.angry, wA, 0.12);
   cur.wow = lerp(cur.wow, wW, 0.15);
   cur.happy = lerp(cur.happy, wH, 0.1);
   cur.tired = lerp(cur.tired, wT, 0.06);
@@ -892,6 +1133,7 @@ function frame(now) {
 
   hud.textContent =
     ringing ? "! alarm ! ketuk untuk mematikan" :
+    sleeping ? "zzz… ketuk untuk membangunkan" :
     mode === "listening" ? "mendengarkan…" :
     mode === "thinking" ? "berpikir…" :
     mode === "speaking" ? "bicara… (ketuk untuk berhenti)" :
