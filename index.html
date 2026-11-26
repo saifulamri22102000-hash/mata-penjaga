@@ -21,6 +21,7 @@
     --panel: #061214;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }   /* supaya panel benar-benar tersembunyi walau punya display:grid */
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
     font-family: ui-monospace, "Courier New", monospace; overflow: hidden;
     -webkit-tap-highlight-color: transparent; touch-action: none; }

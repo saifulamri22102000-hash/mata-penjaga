@@ -1,6 +1,6 @@
 // Service worker Mata Penjaga.
 // Ganti VERSION setiap kali file aplikasi diubah supaya cache lama dibuang.
-const VERSION = "v4";
+const VERSION = "v5";
 const SHELL = `mata-shell-${VERSION}`;
 const LIBS = "mata-libs-v1";
 
